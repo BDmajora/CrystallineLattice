@@ -11,12 +11,25 @@ The full design and phased roadmap live in [DESIGN.md](DESIGN.md).
 - **Phase 0 — platform bring-up: done.** DRM enumeration, atomic modeset, the
   page-flip loop, GBM/EGL/GLES, seatd + VT switching, and hotplug — exposed as
   the `glacier <diag>` commands below.
-- **Phase 2 — input + server-authoritative WM: in progress.** The server-owned
-  window model, WM policy (focus, z-order, interactive move, Alt-Tab) and a CPU
-  (pixman-style) compositor with server-side decorations and a software cursor
-  are landed as `glacier wm`. GL composition and the KMS hardware-cursor plane
-  are the next step; the window model and input routing are already the real
-  server-owned ones, not placeholders.
+- **Phase 1 — compositor primitives: partial.** A CPU (pixman-style) compositor
+  draws the scene and server-side decorations. **Deferred:** GL composition and
+  the KMS hardware-cursor plane — `glacier wm` currently paints a *software*
+  cursor and CPU-composites instead.
+- **Phase 2 — input + server-authoritative WM: done.** The server-owned window
+  model, WM policy (focus, z-order, interactive move, Alt-Tab), input routing in
+  the global virtual-screen space, and `glacier wm` are landed. These are the
+  real server-owned mechanisms, not placeholders. With no client transport yet,
+  `wm` shows a static demo scene (desktop + two windows + cursor).
+- **Next — Phase 3:** the CrystallineLattice transport + `winedrm.drv` (first
+  real Wine client), and back-filling the Phase 1 GL/hardware-cursor work.
+
+> **Black screen / respawn loop?** That means `glacier wm` is exiting during
+> startup, not that a client is missing — the demo scene paints as soon as init
+> survives. Read the session's own log for the failing step:
+> `~/.snowfall-session.log` (and `~/glacier.log` if the debug wrapper is in
+> place); the `[ERR]` line names which init stage bailed (seat, KMS, fb, input).
+> Input is now non-fatal, so a missing mouse/keyboard no longer blanks the
+> desktop.
 
 ## Layout
 

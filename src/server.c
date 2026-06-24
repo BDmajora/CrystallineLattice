@@ -156,11 +156,13 @@ int server_run(int argc, char **argv)
 	}
 
 	struct dumb_fb fb[2];
-	int have_fb = 0;
+	int have_fb = 0, rc = 0;
 	for (; have_fb < 2; have_fb++)
 		if (dumb_fb_create(drm_fd, k.mode.hdisplay, k.mode.vdisplay,
-		                   &fb[have_fb]) != 0)
+		                   &fb[have_fb]) != 0) {
+			rc = 1;
 			goto cleanup;
+		}
 
 	struct window_stack stack;
 	window_stack_init(&stack);
@@ -169,9 +171,13 @@ int server_run(int argc, char **argv)
 	struct wm wm;
 	wm_init(&wm, &stack, k.mode.hdisplay, k.mode.vdisplay);
 
+	/* Input is best-effort. A display server with no usable mouse/keyboard
+	 * should still light up the desktop, not exit and get respawned by the
+	 * greeter into a black screen. If libinput can't bind (no devices, seat
+	 * grabbed elsewhere, udev empty), warn and run on rather than die. */
 	struct input *input = input_create(&seat);
 	if (!input)
-		goto cleanup;
+		LOG_WARN("input unavailable; running without pointer/keyboard");
 
 	struct loop_ctx ctx = { .wm = &wm, .dirty = true };
 	bool master = false, need_modeset = false;
@@ -215,13 +221,13 @@ int server_run(int argc, char **argv)
 
 		struct pollfd pfd[2] = {
 			{ .fd = seat_fd(&seat), .events = POLLIN },
-			{ .fd = input_fd(input), .events = POLLIN },
+			{ .fd = input ? input_fd(input) : -1, .events = POLLIN },
 		};
 		if (poll(pfd, 2, 1000) < 0 && errno != EINTR)
 			break;
 		if (pfd[0].revents & POLLIN)
 			seat_dispatch(&seat, 0);
-		if (pfd[1].revents & POLLIN)
+		if (input && (pfd[1].revents & POLLIN))
 			input_dispatch(input, on_input, &ctx);
 	}
 
@@ -234,5 +240,5 @@ cleanup:
 	kms_finish(&k);
 	seat_close_device(&seat, drm_dev);
 	seat_close(&seat);
-	return 0;
+	return rc;
 }
