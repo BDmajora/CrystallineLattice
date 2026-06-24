@@ -3,8 +3,8 @@
  * loop over poll(), animates a CPU-drawn moving rectangle. This is the
  * frame loop everything else hangs off. Run on a bare VT as root. */
 #define _GNU_SOURCE
-#include "common.h"
-#include "phases.h"
+#include "platform.h"
+#include "diagnostics.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -40,7 +40,7 @@ static void on_flip(int fd, unsigned seq, unsigned sec, unsigned usec,
 	((struct flip_ctx *)data)->pending = 0;
 }
 
-int p0_3_flip_run(int argc, char **argv)
+int diag_pageflip(int argc, char **argv)
 {
 	signal(SIGINT, on_sigint);
 

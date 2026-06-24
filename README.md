@@ -1,54 +1,59 @@
-# glacier — Phase 0 (platform bring-up)
+# glacier — the CrystallineLattice display server
 
-Six P0.x sub-phases over raw DRM/KMS, in strict dependency order, built as
-**one binary** with a subcommand per sub-phase. No wlroots, no Wayland.
+**glacier** is the display-server component of **CrystallineLattice**: a
+from-scratch, *server-authoritative* DRM/KMS display server purpose-built as the
+shell for an open-source Windows environment (YetiOS). It talks to DRM/KMS,
+GBM/EGL and libinput directly — **no wlroots, no Wayland compositor underneath**.
+The full design and phased roadmap live in [DESIGN.md](DESIGN.md).
 
-```
-glacier-phase0 <enum|firstlight|flip|gl|seatd|hotplug> [/dev/dri/cardN]
-```
+## Status
 
-| Subcommand   | Sub-phase                | Master? | Gate |
-|--------------|--------------------------|---------|------|
-| `enum`       | P0.1 enumeration         | no      | dump matches `drm_info`/`modetest` |
-| `firstlight` | P0.2 dumb buffer modeset | yes     | full-screen solid color |
-| `flip`       | P0.3 page-flip loop      | yes     | tear-free moving rectangle |
-| `gl`         | P0.4 GBM/EGL/GLES        | yes     | GL triangle scanned out |
-| `seatd`      | P0.5 seatd + VT switch   | seat    | survives Ctrl-Alt-Fn away/back |
-| `hotplug`    | P0.6 hotplug             | no      | re-enumerates on uevent |
+- **Phase 0 — platform bring-up: done.** DRM enumeration, atomic modeset, the
+  page-flip loop, GBM/EGL/GLES, seatd + VT switching, and hotplug — exposed as
+  the `glacier <diag>` commands below.
+- **Phase 2 — input + server-authoritative WM: in progress.** The server-owned
+  window model, WM policy (focus, z-order, interactive move, Alt-Tab) and a CPU
+  (pixman-style) compositor with server-side decorations and a software cursor
+  are landed as `glacier wm`. GL composition and the KMS hardware-cursor plane
+  are the next step; the window model and input routing are already the real
+  server-owned ones, not placeholders.
 
 ## Layout
-```
-main.c              dispatcher (subcommand -> p0_*_run)
-include/common.h    shared platform API
-include/phases.h    p0_*_run declarations
-src/common.c        device open, atomic prop maps, KMS target, dumb FB
-src/p0_1_enum.c ..  one sub-phase per file (each defines p0_*_run)
-test/run-phase0.sh  build + non-destructive checks + VT instructions
-```
-The GL path keeps the dumb buffer as the pixman/CPU fallback.
 
-## Build deps (Gentoo)
-`x11-libs/libdrm media-libs/mesa[gbm,egl,gles2] virtual/libudev
-sys-auth/seatd dev-build/meson`.
-
-## Build & test
 ```
-meson setup build
+main.c                 subcommand dispatch
+include/ + src/
+  log.*                leveled logging
+  platform.*           DRM/KMS: device open, modeset target, dumb framebuffers
+  seat.*               seatd session (DRM master + device access, VT switching)
+  input.*              libinput + xkb keysym/modifier translation
+  window.*             server-owned window model (global coords, z-order, roles)
+  wm.*                 window-manager policy (focus, interactive move, Alt-Tab)
+  server.*             display server: WM + CPU compositor   (`glacier wm`)
+  diag_*.c             Phase-0 platform diagnostics
+tests/wm_selftest.c    window-model + WM-policy unit test (no hardware)
+```
+
+## Build
+
+```sh
+meson setup build      # deps: libdrm gbm egl glesv2 libudev libseat libinput xkbcommon
 ninja -C build
-test/run-phase0.sh                  # auto-runs enum + hotplug; prints VT steps
-test/run-phase0.sh /dev/dri/card1   # pin a device
+meson test -C build    # runs the window/WM unit test
 ```
 
-## QEMU virtio-gpu (CI/dev loop)
-Boot with `-device virtio-gpu-pci` (or `-vga virtio`) to a text console,
-then run subcommands on the VT. virtio may need `virgl`/llvmpipe for `gl`;
-if EGL/GLES is unavailable, `enum` still passes and `gl` is fallback-only
-for that target. Hotplug test: `device_del`/`device_add` a `virtio-gpu-pci`
-from the QEMU monitor.
+## Run
 
-## Notes
-- `firstlight`/`flip`/`gl` run as root on a bare VT (seatd arrives at the
-  `seatd` step). Stop any display manager / compositor first — it holds
-  DRM master.
-- `seatd` needs `seatd` running and your user in the `seat` group.
-- Each modeset subcommand auto-exits (5s / 15s) or on Ctrl-C.
+```sh
+glacier wm             # the display server — from a bare VT, user in the 'seat' group
+                       #   drag a title bar to move · Alt-Tab to switch · Esc to quit
+glacier enum           # platform diagnostics: enum|firstlight|flip|gl|seatd|hotplug
+```
+
+The modeset diagnostics and `glacier wm` take DRM master, so run them from a bare
+VT (stop any display manager first). `enum` and `hotplug` are read-only and safe
+under a live session.
+
+## License
+
+Built for the YetiOS project.

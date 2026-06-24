@@ -1,26 +1,15 @@
-/* glacier Phase 0 — shared platform helpers. */
+/* glacier — DRM/KMS platform layer (device, modeset target, framebuffers). */
 #define _GNU_SOURCE
-#include "common.h"
+#include "platform.h"
 
 #include <drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-
-void log_msg(const char *level, const char *fmt, ...)
-{
-	va_list ap;
-	fprintf(stderr, "[%s] ", level);
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-	fputc('\n', stderr);
-}
 
 /* ---- property maps --------------------------------------------------- */
 int prop_map_load(int fd, uint32_t obj_id, uint32_t obj_type, struct prop_map *out)

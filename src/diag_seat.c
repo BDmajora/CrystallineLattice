@@ -4,8 +4,8 @@
  * seat-disable (VT-away), and repaints on re-enable (VT-return). Run as a
  * normal user in the "seat" group; switch VTs to verify. */
 #define _GNU_SOURCE
-#include "common.h"
-#include "phases.h"
+#include "platform.h"
+#include "diagnostics.h"
 
 #include <errno.h>
 #include <libseat.h>
@@ -80,7 +80,7 @@ static int paint(struct state *st)
 	return 0;
 }
 
-int p0_5_seatd_run(int argc, char **argv)
+int diag_seat(int argc, char **argv)
 {
 	signal(SIGINT, on_sigint);
 	const char *path = argc > 1 ? argv[1] : "/dev/dri/card0";

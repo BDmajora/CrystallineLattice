@@ -5,8 +5,8 @@
  * The dumb-buffer CPU path in common.c remains the pixman fallback.
  * Run on a bare VT as root. */
 #define _GNU_SOURCE
-#include "common.h"
-#include "phases.h"
+#include "platform.h"
+#include "diagnostics.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -130,7 +130,7 @@ static EGLConfig pick_config(EGLDisplay dpy, uint32_t gbm_format)
 	return chosen;
 }
 
-int p0_4_gl_run(int argc, char **argv)
+int diag_gl(int argc, char **argv)
 {
 	signal(SIGINT, on_sigint);
 

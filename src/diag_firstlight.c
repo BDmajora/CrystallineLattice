@@ -3,8 +3,8 @@
  * connector -> CRTC -> primary plane in one atomic commit (TEST_ONLY
  * first). Run on a bare VT as root. No GBM/GL. */
 #define _GNU_SOURCE
-#include "common.h"
-#include "phases.h"
+#include "platform.h"
+#include "diagnostics.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -22,7 +22,7 @@ static void fill_solid(struct dumb_fb *fb, uint32_t xrgb)
 	}
 }
 
-int p0_2_firstlight_run(int argc, char **argv)
+int diag_firstlight(int argc, char **argv)
 {
 	int fd = drm_open(argc > 1 ? argv[1] : NULL);
 	if (fd < 0)

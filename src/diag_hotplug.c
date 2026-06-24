@@ -3,8 +3,8 @@
  * re-runs connector enumeration. No master required. Run it, then plug/
  * unplug a monitor (or QEMU device_add/device_del a virtio display). */
 #define _GNU_SOURCE
-#include "common.h"
-#include "phases.h"
+#include "platform.h"
+#include "diagnostics.h"
 
 #include <errno.h>
 #include <libudev.h>
@@ -17,7 +17,7 @@
 static volatile sig_atomic_t running = 1;
 static void on_sigint(int s) { (void)s; running = 0; }
 
-int p0_6_hotplug_run(int argc, char **argv)
+int diag_hotplug(int argc, char **argv)
 {
 	signal(SIGINT, on_sigint);
 

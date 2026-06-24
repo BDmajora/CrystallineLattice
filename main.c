@@ -1,11 +1,13 @@
-/* glacier — Phase 0 driver.
- * One binary, one subcommand per P0.x sub-phase (strict dependency order).
+/* glacier — display server + platform diagnostics, one binary.
  *
- *   glacier-phase0 <enum|firstlight|flip|gl|seatd|hotplug> [/dev/dri/cardN]
+ *   glacier wm [/dev/dri/cardN]        the display server (Phase 2)
+ *   glacier <enum|firstlight|flip|gl|seatd|hotplug> [/dev/dri/cardN]
+ *                                      platform bring-up diagnostics
  *
- * enum/hotplug take no DRM master (safe under a live session); the rest
- * modeset and must run from a bare VT (see README). */
-#include "phases.h"
+ * enum/hotplug take no DRM master (safe under a live session); the modeset
+ * diagnostics and `wm` must run from a bare VT (see README). */
+#include "diagnostics.h"
+#include "server.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,12 +19,13 @@ struct cmd {
 };
 
 static const struct cmd cmds[] = {
-	{ "enum",       p0_1_enum_run,       "P0.1  resource enumeration (no master)" },
-	{ "firstlight", p0_2_firstlight_run, "P0.2  dumb-buffer atomic modeset, solid color" },
-	{ "flip",       p0_3_flip_run,       "P0.3  double-buffer page-flip loop (vsync)" },
-	{ "gl",         p0_4_gl_run,         "P0.4  GBM/EGL/GLES triangle, scanned out" },
-	{ "seatd",      p0_5_seatd_run,      "P0.5  seatd session + VT switching" },
-	{ "hotplug",    p0_6_hotplug_run,    "P0.6  udev hotplug monitor (no master)" },
+	{ "wm",         server_run,      "display server: WM + CPU compositor (Phase 2)" },
+	{ "enum",       diag_enumerate,  "diag: resource enumeration (no master)" },
+	{ "firstlight", diag_firstlight, "diag: dumb-buffer atomic modeset, solid color" },
+	{ "flip",       diag_pageflip,   "diag: double-buffer page-flip loop (vsync)" },
+	{ "gl",         diag_gl,         "diag: GBM/EGL/GLES triangle, scanned out" },
+	{ "seatd",      diag_seat,       "diag: seatd session + VT switching" },
+	{ "hotplug",    diag_hotplug,    "diag: udev DRM hotplug monitor (no master)" },
 };
 
 static int usage(const char *prog)

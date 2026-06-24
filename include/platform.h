@@ -1,18 +1,15 @@
-/* glacier Phase 0 — shared platform helpers (DRM/KMS, no policy). */
-#ifndef GLACIER_COMMON_H
-#define GLACIER_COMMON_H
+/* glacier — DRM/KMS platform: device open, modeset target, dumb framebuffers. */
+#ifndef GLACIER_PLATFORM_H
+#define GLACIER_PLATFORM_H
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
+#include "log.h"
 
-void log_msg(const char *level, const char *fmt, ...);
-#define LOG_INFO(...) log_msg("INFO", __VA_ARGS__)
-#define LOG_WARN(...) log_msg("WARN", __VA_ARGS__)
-#define LOG_ERR(...)  log_msg("ERR ", __VA_ARGS__)
+#define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 /* ---- atomic property maps -------------------------------------------- */
 struct prop {
@@ -68,4 +65,4 @@ struct dumb_fb {
 int  dumb_fb_create(int fd, int w, int h, struct dumb_fb *fb);
 void dumb_fb_destroy(int fd, struct dumb_fb *fb);
 
-#endif /* GLACIER_COMMON_H */
+#endif /* GLACIER_PLATFORM_H */

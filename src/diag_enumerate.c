@@ -2,8 +2,8 @@
  * Walks connectors/CRTCs/planes via the atomic-capable node and prints a
  * topology dump. Compare against `drm_info` and `modetest -c -p`. */
 #define _GNU_SOURCE
-#include "common.h"
-#include "phases.h"
+#include "platform.h"
+#include "diagnostics.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -128,7 +128,7 @@ static void dump_planes(int fd)
 	drmModeFreePlaneResources(pres);
 }
 
-int p0_1_enum_run(int argc, char **argv)
+int diag_enumerate(int argc, char **argv)
 {
 	int fd = drm_open(argc > 1 ? argv[1] : NULL);
 	if (fd < 0)
