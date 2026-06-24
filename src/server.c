@@ -135,10 +135,12 @@ int server_run(int argc, char **argv)
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
 	const char *path = argc > 1 ? argv[1] : "/dev/dri/card0";
+	LOG_INFO("server_run: starting (device=%s)", path);
 
 	struct seat seat;
 	if (seat_open(&seat) != 0)
 		return 1;
+	LOG_INFO("seat opened (active=%d)", (int)seat_active(&seat));
 
 	int drm_fd = -1;
 	int drm_dev = seat_open_device(&seat, path, &drm_fd);
@@ -163,6 +165,8 @@ int server_run(int argc, char **argv)
 			rc = 1;
 			goto cleanup;
 		}
+	LOG_INFO("framebuffers ready (2x %dx%d, XRGB8888)",
+	         k.mode.hdisplay, k.mode.vdisplay);
 
 	struct window_stack stack;
 	window_stack_init(&stack);
@@ -188,7 +192,9 @@ int server_run(int argc, char **argv)
 
 	while (running) {
 		if (seat_active(&seat) && !master) {
-			drmSetMaster(drm_fd);
+			int sm = drmSetMaster(drm_fd);
+			LOG_INFO("acquiring DRM master: drmSetMaster=%d%s", sm,
+			         sm == 0 ? " (ok)" : " — continuing (libseat may already hold it)");
 			master = true;
 			need_modeset = true;
 			ctx.dirty = true;
@@ -211,8 +217,12 @@ int server_run(int argc, char **argv)
 				atomic_add(req, k.plane_id, &k.plane_props, "FB_ID",
 				           fb[back].fb_id);
 			}
-			if (drmModeAtomicCommit(drm_fd, req, flags, NULL) != 0)
-				LOG_WARN("atomic commit: %s", strerror(errno));
+			int cr = drmModeAtomicCommit(drm_fd, req, flags, NULL);
+			if (cr != 0)
+				LOG_WARN("atomic commit failed (flags=0x%x modeset=%d): %s",
+				         flags, (int)need_modeset, strerror(errno));
+			else if (need_modeset)
+				LOG_INFO("first modeset commit OK — desktop should now be on screen");
 			drmModeAtomicFree(req);
 			front = back;
 			need_modeset = false;
