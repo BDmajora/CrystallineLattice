@@ -34,6 +34,10 @@ int      atomic_add(drmModeAtomicReq *req, uint32_t obj_id,
  * connected connector. Returns fd >= 0 or -1. */
 int drm_open(const char *explicit_path);
 int drm_set_caps(int fd);
+/* True if the DRM fd has at least one connected connector. Used to prefer a
+ * display-capable node when probing /dev/dri/cardN (e.g. under seatd, where
+ * the device must be opened via libseat rather than a direct open()). */
+bool drm_has_connected(int fd);
 /* Brief connector-state listing (used by P0.1 and P0.6). */
 void print_connectors(int fd);
 

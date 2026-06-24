@@ -96,7 +96,7 @@ int drm_set_caps(int fd)
 	return 0;
 }
 
-static bool has_connected(int fd)
+bool drm_has_connected(int fd)
 {
 	drmModeRes *res = drmModeGetResources(fd);
 	if (!res)
@@ -140,7 +140,7 @@ int drm_open(const char *explicit_path)
 			close(fd);
 			continue;
 		}
-		if (has_connected(fd)) {
+		if (drm_has_connected(fd)) {
 			LOG_INFO("using %s (connected)", path);
 			return fd;
 		}

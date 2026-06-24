@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -134,19 +135,74 @@ int server_run(int argc, char **argv)
 {
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
-	const char *path = argc > 1 ? argv[1] : "/dev/dri/card0";
-	LOG_INFO("server_run: starting (device=%s)", path);
+	const char *explicit_path = argc > 1 ? argv[1] : NULL;
 
 	struct seat seat;
 	if (seat_open(&seat) != 0)
 		return 1;
 	LOG_INFO("seat opened (active=%d)", (int)seat_active(&seat));
 
-	int drm_fd = -1;
-	int drm_dev = seat_open_device(&seat, path, &drm_fd);
-	if (drm_dev < 0 || drm_set_caps(drm_fd) != 0) {
-		seat_close(&seat);
-		return 1;
+	/* Pick the DRM device. The /dev/dri/cardN number is NOT stable —
+	 * card0 may not exist (e.g. a VM where the GPU enumerates as card1) —
+	 * so unless an explicit path was given we probe card0..15 and take the
+	 * first KMS-capable node, preferring one with a connected connector
+	 * (same policy as drm_open()). The open must go through seatd: as the
+	 * unprivileged session we may not open the DRM master ourselves. */
+	char path[64];
+	int drm_fd = -1, drm_dev = -1;
+
+	if (explicit_path) {
+		snprintf(path, sizeof(path), "%s", explicit_path);
+		LOG_INFO("server_run: starting (device=%s)", path);
+		drm_dev = seat_open_device(&seat, path, &drm_fd);
+		if (drm_dev < 0 || drm_set_caps(drm_fd) != 0) {
+			seat_close(&seat);
+			return 1;
+		}
+	} else {
+		LOG_INFO("server_run: probing /dev/dri/card0..15 for a KMS device");
+		int fb_dev = -1, fb_fd = -1;
+		char fb_path[64] = {0};
+		for (int i = 0; i < 16 && drm_dev < 0; i++) {
+			char cand[64];
+			snprintf(cand, sizeof(cand), "/dev/dri/card%d", i);
+			if (access(cand, F_OK) != 0)
+				continue;
+			int fd = -1;
+			int dev = seat_open_device(&seat, cand, &fd);
+			if (dev < 0)
+				continue;
+			if (drm_set_caps(fd) != 0) {
+				seat_close_device(&seat, dev);
+				continue;
+			}
+			if (drm_has_connected(fd)) {
+				drm_dev = dev;
+				drm_fd = fd;
+				snprintf(path, sizeof(path), "%s", cand);
+				LOG_INFO("using %s (connected)", cand);
+			} else if (fb_dev < 0) {
+				fb_dev = dev;
+				fb_fd = fd;
+				snprintf(fb_path, sizeof(fb_path), "%s", cand);
+				LOG_INFO("fallback candidate %s (no connected connector)", cand);
+			} else {
+				seat_close_device(&seat, dev);
+			}
+		}
+		if (drm_dev < 0) {
+			if (fb_dev < 0) {
+				LOG_ERR("no KMS-capable DRM device found in /dev/dri");
+				seat_close(&seat);
+				return 1;
+			}
+			drm_dev = fb_dev;
+			drm_fd = fb_fd;
+			snprintf(path, sizeof(path), "%s", fb_path);
+			LOG_INFO("using %s (fallback, no connected connector)", path);
+		} else if (fb_dev >= 0) {
+			seat_close_device(&seat, fb_dev); /* found connected; drop fallback */
+		}
 	}
 	LOG_INFO("opened %s via seat", path);
 
