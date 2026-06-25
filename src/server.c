@@ -10,6 +10,7 @@
 #include "wayland.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -143,6 +144,19 @@ static void spawn_terminal(struct wl_frontend *wl)
 		setsid();
 		if (sock)
 			setenv("WAYLAND_DISPLAY", sock, 1);
+		/* Capture the terminal's own stdout/stderr so a client-side failure
+		 * (missing global, font, etc.) is diagnosable instead of vanishing. */
+		const char *home = getenv("HOME");
+		char tlog[512];
+		snprintf(tlog, sizeof(tlog), "%s/glacier-terminal.log",
+		         (home && home[0]) ? home : "/tmp");
+		int lfd = open(tlog, O_WRONLY | O_CREAT | O_APPEND, 0644);
+		if (lfd >= 0) {
+			dup2(lfd, 1);
+			dup2(lfd, 2);
+			if (lfd > 2)
+				close(lfd);
+		}
 		/* $GLACIER_TERMINAL wins; otherwise try common terminals in turn.
 		 * execlp only returns on failure, so we fall through to the next. */
 		const char *env = getenv("GLACIER_TERMINAL");

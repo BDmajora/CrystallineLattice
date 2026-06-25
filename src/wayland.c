@@ -71,6 +71,8 @@ struct wl_frontend {
 	uint32_t pointer_focus;            /* glacier window id under the pointer */
 	uint32_t kbd_focus;                /* glacier window id with kbd focus */
 	int last_px, last_py;              /* last surface-local pointer position */
+
+	struct wl_listener new_client;     /* logs each client connection */
 };
 
 static uint32_t now_ms(void)
@@ -315,6 +317,88 @@ static void compositor_bind(struct wl_client *c, void *data, uint32_t ver, uint3
 	struct wl_resource *r = wl_resource_create(c, &wl_compositor_interface, ver, id);
 	if (r)
 		wl_resource_set_implementation(r, &compositor_impl, data, NULL);
+}
+
+/* ---- wl_subcompositor (required by foot/GTK; minimal) ---------------- */
+/* Subsurfaces are accepted but not separately composited — toolkits use them
+ * for auxiliary overlays (search box, scrollbar) and CSD borders; the main
+ * content rides the parent surface, which we do composite. Enough to satisfy
+ * clients that hard-require the global. */
+static void res_destroy(struct wl_client *c, struct wl_resource *r) { (void)c; wl_resource_destroy(r); }
+static void sub_set_position(struct wl_client *c, struct wl_resource *r, int32_t x, int32_t y)
+{ (void)c; (void)r; (void)x; (void)y; }
+static void sub_place(struct wl_client *c, struct wl_resource *r, struct wl_resource *sib)
+{ (void)c; (void)r; (void)sib; }
+static void sub_sync(struct wl_client *c, struct wl_resource *r) { (void)c; (void)r; }
+static const struct wl_subsurface_interface subsurface_impl = {
+	.destroy = res_destroy, .set_position = sub_set_position,
+	.place_above = sub_place, .place_below = sub_place,
+	.set_sync = sub_sync, .set_desync = sub_sync,
+};
+static void subcomp_get_subsurface(struct wl_client *c, struct wl_resource *r, uint32_t id,
+                                   struct wl_resource *surface, struct wl_resource *parent)
+{
+	(void)surface; (void)parent;
+	struct wl_resource *res = wl_resource_create(c, &wl_subsurface_interface,
+	                                             wl_resource_get_version(r), id);
+	if (res)
+		wl_resource_set_implementation(res, &subsurface_impl, NULL, NULL);
+}
+static const struct wl_subcompositor_interface subcompositor_impl = {
+	.destroy = res_destroy, .get_subsurface = subcomp_get_subsurface,
+};
+static void subcompositor_bind(struct wl_client *c, void *data, uint32_t ver, uint32_t id)
+{
+	struct wl_resource *r = wl_resource_create(c, &wl_subcompositor_interface, ver, id);
+	if (r)
+		wl_resource_set_implementation(r, &subcompositor_impl, data, NULL);
+}
+
+/* ---- wl_data_device_manager (clipboard; inert stub) ------------------ */
+/* No real clipboard yet — but foot and most toolkits hard-require the global
+ * to exist, so we hand back inert objects rather than let them abort. */
+static void dsrc_offer(struct wl_client *c, struct wl_resource *r, const char *m)
+{ (void)c; (void)r; (void)m; }
+static void dsrc_set_actions(struct wl_client *c, struct wl_resource *r, uint32_t a)
+{ (void)c; (void)r; (void)a; }
+static const struct wl_data_source_interface data_source_impl = {
+	.offer = dsrc_offer, .destroy = res_destroy, .set_actions = dsrc_set_actions,
+};
+static void ddev_start_drag(struct wl_client *c, struct wl_resource *r, struct wl_resource *src,
+                            struct wl_resource *origin, struct wl_resource *icon, uint32_t serial)
+{ (void)c; (void)r; (void)src; (void)origin; (void)icon; (void)serial; }
+static void ddev_set_selection(struct wl_client *c, struct wl_resource *r,
+                               struct wl_resource *src, uint32_t serial)
+{ (void)c; (void)r; (void)src; (void)serial; }
+static const struct wl_data_device_interface data_device_impl = {
+	.start_drag = ddev_start_drag, .set_selection = ddev_set_selection,
+	.release = res_destroy,
+};
+static void ddm_create_data_source(struct wl_client *c, struct wl_resource *r, uint32_t id)
+{
+	struct wl_resource *res = wl_resource_create(c, &wl_data_source_interface,
+	                                             wl_resource_get_version(r), id);
+	if (res)
+		wl_resource_set_implementation(res, &data_source_impl, NULL, NULL);
+}
+static void ddm_get_data_device(struct wl_client *c, struct wl_resource *r, uint32_t id,
+                                struct wl_resource *seat)
+{
+	(void)seat;
+	struct wl_resource *res = wl_resource_create(c, &wl_data_device_interface,
+	                                             wl_resource_get_version(r), id);
+	if (res)
+		wl_resource_set_implementation(res, &data_device_impl, NULL, NULL);
+}
+static const struct wl_data_device_manager_interface data_device_manager_impl = {
+	.create_data_source = ddm_create_data_source,
+	.get_data_device = ddm_get_data_device,
+};
+static void data_device_manager_bind(struct wl_client *c, void *data, uint32_t ver, uint32_t id)
+{
+	struct wl_resource *r = wl_resource_create(c, &wl_data_device_manager_interface, ver, id);
+	if (r)
+		wl_resource_set_implementation(r, &data_device_manager_impl, data, NULL);
 }
 
 /* ---- xdg_toplevel ---------------------------------------------------- */
@@ -717,6 +801,14 @@ void wl_frontend_keyboard_focus(struct wl_frontend *fe, uint32_t window_id)
 	fe->kbd_focus = target;
 }
 
+/* ---- lifecycle ------------------------------------------------------- */
+
+static void on_new_client(struct wl_listener *l, void *data)
+{
+	(void)l; (void)data;
+	LOG_INFO("wayland: client connected");
+}
+
 /* ---- keymap fd for wl_keyboard --------------------------------------- */
 
 static void build_keymap(struct wl_frontend *fe)
@@ -772,6 +864,10 @@ struct wl_frontend *wl_frontend_create(struct window_stack *stack, int sw, int s
 
 	if (!wl_global_create(fe->display, &wl_compositor_interface,
 	                      COMPOSITOR_VERSION, fe, compositor_bind) ||
+	    !wl_global_create(fe->display, &wl_subcompositor_interface,
+	                      1, fe, subcompositor_bind) ||
+	    !wl_global_create(fe->display, &wl_data_device_manager_interface,
+	                      3, fe, data_device_manager_bind) ||
 	    !wl_global_create(fe->display, &wl_seat_interface,
 	                      SEAT_VERSION, fe, seat_bind) ||
 	    !wl_global_create(fe->display, &wl_output_interface,
@@ -781,6 +877,9 @@ struct wl_frontend *wl_frontend_create(struct window_stack *stack, int sw, int s
 	    !wl_global_create(fe->display, &zxdg_decoration_manager_v1_interface,
 	                      DECORATION_VERSION, fe, decoration_bind))
 		goto fail;
+
+	fe->new_client.notify = on_new_client;
+	wl_display_add_client_created_listener(fe->display, &fe->new_client);
 
 	LOG_INFO("wayland: frontend up on $WAYLAND_DISPLAY=%s", fe->socket);
 	return fe;
