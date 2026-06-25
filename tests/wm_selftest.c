@@ -33,7 +33,17 @@ int main(void)
 	/* Interactive move via the WM. */
 	struct wm wm;
 	wm_init(&wm, &s, 1920, 1080);
-	wm.cursor_x = 650; wm.cursor_y = 450;        /* over B only */
+
+	/* A content press focuses but does NOT start a drag — it passes through to
+	 * the client (Phase 4: native apps stay interactive). B is at (300,200);
+	 * (650,450) is well below its title bar. */
+	wm.cursor_x = 650; wm.cursor_y = 450;
+	wm_pointer_button(&wm, WM_BTN_LEFT, true);
+	assert(s.focus_id == b && !wm.moving);
+	wm_pointer_button(&wm, WM_BTN_LEFT, false);
+
+	/* A title-bar press (within DECOR_TITLEBAR_H of the top) starts a move. */
+	wm.cursor_x = 650; wm.cursor_y = 205;        /* over B's title bar */
 	wm_pointer_button(&wm, WM_BTN_LEFT, true);
 	assert(s.focus_id == b && wm.moving);
 	int bx = window_by_id(&s, b)->x, by = window_by_id(&s, b)->y;

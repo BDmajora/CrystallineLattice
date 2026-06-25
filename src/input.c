@@ -152,7 +152,8 @@ static void emit_key(struct input *in, struct libinput_event *e,
 	bool pressed = libinput_event_keyboard_get_key_state(k) ==
 	               LIBINPUT_KEY_STATE_PRESSED;
 
-	struct input_event ev = { .kind = INPUT_KEY, .pressed = pressed };
+	struct input_event ev = { .kind = INPUT_KEY, .pressed = pressed,
+	                          .keycode = code };
 	if (in->state) {
 		xkb_keycode_t xkc = code + 8; /* evdev → xkb keycode offset */
 		ev.keysym = xkb_state_key_get_one_sym(in->state, xkc);
@@ -160,6 +161,8 @@ static void emit_key(struct input *in, struct libinput_event *e,
 		                     pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
 		ev.alt_down = xkb_state_mod_name_is_active(
 		        in->state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0;
+		ev.ctrl_down = xkb_state_mod_name_is_active(
+		        in->state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0;
 	} else {
 		ev.keysym = code; /* raw fallback */
 	}

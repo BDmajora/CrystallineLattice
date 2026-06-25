@@ -61,6 +61,11 @@ void wm_pointer_button(struct wm *wm, uint32_t button, bool pressed)
 		/* The desktop/wallpaper is not draggable. */
 		if (role == WIN_DESKTOP)
 			return;
+		/* Only the server-drawn title bar is a drag handle. A press in the
+		 * content area focuses the window but passes through to the client,
+		 * so native apps (Phase 4) stay interactive. */
+		if (wm->cursor_y - wy >= DECOR_TITLEBAR_H)
+			return;
 		wm->moving = true;
 		wm->move_id = id;
 		wm->grab_dx = wm->cursor_x - wx;

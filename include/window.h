@@ -42,6 +42,11 @@ struct window {
 
 #define WIN_MAX 64
 
+/* Height of the server-drawn title bar. Shared by the compositor (which draws
+ * it) and the WM (which treats a press on it as a drag handle, vs. a content
+ * press that passes through to the client). */
+#define DECOR_TITLEBAR_H 28
+
 /* Z-ordered list: windows[0] is bottom, windows[count-1] is top. */
 struct window_stack {
 	struct window windows[WIN_MAX];

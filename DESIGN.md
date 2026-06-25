@@ -10,9 +10,14 @@
 > tablets) · **Phase 3 in progress** — the CrystallineLattice transport (v0 wire
 > format, SEQPACKET socket, role registration, `SCM_RIGHTS` shm buffers with the
 > render-fence fd already on the wire, crash-resilient reaping) and a trivial
-> native test client (`glacier-client`) have landed; routing input to the
-> focused client, dma-buf import, and `winedrm.drv` are next. See `README.md`
-> for the per-component breakdown.
+> native test client (`glacier-client`) have landed · **Phase 4 landed** — the
+> self-implemented Wayland frontend (Transport B: `wl_compositor`/`wl_surface`/
+> `wl_shm`/`xdg_wm_base`/`wl_seat`/`wl_output` + xdg-decoration forcing SSD)
+> reparents native toplevels into server-owned windows; Ctrl+Alt+T spawns a
+> terminal. Remaining: input-to-Wine-client routing + dma-buf import (Phase 3),
+> `winedrm.drv`, Xwayland bring-up + `wl_subsurface`/popups (Phase 4), and the
+> Phase 1 GL/hardware-cursor back-fill. See `README.md` for the per-component
+> breakdown.
 
 ## Naming (locked)
 
@@ -257,9 +262,9 @@ Watch udev for DRM uevents; on hotplug, re-run P0.1 enumeration and reconfigure.
 - Write a trivial **native test client** against the same wire format first (decouples protocol bugs from Wine bugs) — *landed as `glacier-client`* — then **`winedrm.drv`** — the new Wine graphics driver, including the keysym → Win32 VK / `WM_CHAR` translation — drawing one real window (notepad / solitaire) into the server, taking input, placed by the server.
 - **Exit:** a Win32 app renders and is interactive through `winedrm.drv` — start of feature-parity with the PoC.
 
-### Phase 4 — Transport B: Wayland compatibility frontend + Xwayland
-- Implement glacier's own minimal Wayland server frontend (§3.5): `wl_compositor`/`wl_surface`/`wl_subsurface`, `xdg_wm_base`, `linux-dmabuf-v1` (+ `wl_shm` fallback), `wl_seat`, `wl_output`, `xdg-decoration` set to **enforce SSD**. Reparent each toplevel as a glacier `NORMAL` window through the same engine path as Transport A. Ignore `wl_pointer.set_cursor` (server owns the cursor plane).
-- Bring up **Xwayland** against this frontend for legacy X11 apps.
+### Phase 4 — Transport B: Wayland compatibility frontend + Xwayland — **landed (frontend); Xwayland next**
+- Implement glacier's own minimal Wayland server frontend (§3.5): `wl_compositor`/`wl_surface`/`wl_subsurface`, `xdg_wm_base`, `linux-dmabuf-v1` (+ `wl_shm` fallback), `wl_seat`, `wl_output`, `xdg-decoration` set to **enforce SSD**. Reparent each toplevel as a glacier `NORMAL` window through the same engine path as Transport A. Ignore `wl_pointer.set_cursor` (server owns the cursor plane). *(Landed in `src/wayland.c`: `wl_compositor`/`wl_surface`, `wl_shm` CPU buffers, `xdg_wm_base`/`xdg_surface`/`xdg_toplevel`, `wl_seat` pointer+keyboard, `wl_output`, and xdg-decoration always answering SERVER_SIDE; toplevels reparent into the shared window stack and wear the server title bar. `Ctrl+Alt+T` spawns `foot`. Pending: `linux-dmabuf-v1` import — shm only for now — and `wl_subsurface`/popups.)*
+- Bring up **Xwayland** against this frontend for legacy X11 apps. *(Pending — `xorg-xwayland` is packaged; needs the rootless-Xwayland wl_client plumbing + X11 WM glue.)*
 - **Exit:** a GTK app, a Qt app, and an X11 app (`xeyes`-class) each render inside glacier wearing Windows server-side decorations and the server cursor, composited as peers of the Wine window from Phase 3. This is the point the "Qt-vs-GTK chrome mess" is gone.
 
 ### Phase 5 — The Windows shell (parity gate)

@@ -7,6 +7,7 @@
 #include "window.h"
 #include "wm.h"
 #include "transport.h"
+#include "wayland.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -16,7 +17,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define TITLEBAR_H 28
+#define TITLEBAR_H DECOR_TITLEBAR_H   /* shared with the WM (window.h) */
 #define COLOR_DESKTOP   0x00101820u
 #define COLOR_TB_FOCUS  0x003a6fd0u
 #define COLOR_TB_PLAIN  0x00606060u
@@ -123,7 +124,28 @@ static void composite(struct dumb_fb *fb, struct wm *wm)
 
 /* ---- input routing --------------------------------------------------- */
 
-struct loop_ctx { struct wm *wm; bool dirty; };
+struct loop_ctx { struct wm *wm; struct wl_frontend *wl; bool dirty; };
+
+/* Ctrl+Alt+T → a terminal. The terminal is a native Wayland client, so it
+ * connects back to glacier's own Wayland frontend (Transport B); we point it
+ * at that socket. $GLACIER_TERMINAL overrides the default (`foot`). */
+static void spawn_terminal(struct wl_frontend *wl)
+{
+	const char *term = getenv("GLACIER_TERMINAL");
+	if (!term || !term[0])
+		term = "foot";
+	const char *sock = wl ? wl_frontend_socket(wl) : NULL;
+	LOG_INFO("spawn terminal: %s (WAYLAND_DISPLAY=%s)", term, sock ? sock : "?");
+	pid_t pid = fork();
+	if (pid == 0) {
+		setsid();
+		if (sock)
+			setenv("WAYLAND_DISPLAY", sock, 1);
+		execlp(term, term, (char *)NULL);
+		_exit(127);   /* exec failed (terminal not installed) */
+	}
+	/* Parent: SIGCHLD is SIG_IGN, so the child is auto-reaped. */
+}
 
 static void on_input(const struct input_event *ev, void *user)
 {
@@ -131,23 +153,40 @@ static void on_input(const struct input_event *ev, void *user)
 	switch (ev->kind) {
 	case INPUT_MOTION:
 		wm_pointer_motion(c->wm, ev->dx, ev->dy);
+		if (c->wl)
+			wl_frontend_pointer_motion(c->wl, c->wm->cursor_x, c->wm->cursor_y);
 		c->dirty = true;
 		break;
 	case INPUT_MOTION_ABS:
 		wm_pointer_motion_abs(c->wm, ev->ax, ev->ay);
+		if (c->wl)
+			wl_frontend_pointer_motion(c->wl, c->wm->cursor_x, c->wm->cursor_y);
 		c->dirty = true;
 		break;
 	case INPUT_BUTTON:
+		/* The WM focuses (and drags on the title bar); a content press also
+		 * reaches the focused Wayland client. */
 		wm_pointer_button(c->wm, ev->button, ev->pressed);
+		if (c->wl)
+			wl_frontend_pointer_button(c->wl, ev->button, ev->pressed);
 		c->dirty = true;
 		break;
 	case INPUT_KEY:
+		if (ev->pressed && ev->ctrl_down && ev->alt_down &&
+		    (ev->keysym == 0x74u || ev->keysym == 0x54u)) { /* 't'/'T' */
+			spawn_terminal(c->wl);
+			break;
+		}
 		if (ev->pressed && ev->keysym == 0xff1bu) { /* XKB_KEY_Escape */
 			running = 0;
 			break;
 		}
-		if (wm_key(c->wm, ev->keysym, ev->pressed, ev->alt_down))
+		if (wm_key(c->wm, ev->keysym, ev->pressed, ev->alt_down)) {
 			c->dirty = true;
+			break;        /* WM consumed it (Alt-Tab) — don't forward */
+		}
+		if (c->wl)        /* otherwise route to the focused Wayland client */
+			wl_frontend_keyboard_key(c->wl, ev->keycode, ev->pressed);
 		break;
 	}
 }
@@ -170,6 +209,7 @@ int server_run(int argc, char **argv)
 {
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
+	signal(SIGCHLD, SIG_IGN);   /* auto-reap spawned terminals (Ctrl+Alt+T) */
 	const char *explicit_path = argc > 1 ? argv[1] : NULL;
 
 	struct seat seat;
@@ -287,7 +327,16 @@ int server_run(int argc, char **argv)
 	if (!xport)
 		LOG_WARN("transport unavailable; no CrystallineLattice clients");
 
-	struct loop_ctx ctx = { .wm = &wm, .dirty = true };
+	/* Phase 4: Transport B — glacier's own minimal Wayland frontend, so native
+	 * Linux apps (GTK/Qt/Electron, Xwayland-bridged X11) display as peers of
+	 * Wine windows, wearing the same server-drawn chrome and cursor. Like the
+	 * other inputs, it is best-effort. */
+	struct wl_frontend *wl = wl_frontend_create(&stack, k.mode.hdisplay,
+	                                             k.mode.vdisplay);
+	if (!wl)
+		LOG_WARN("wayland frontend unavailable; native Linux apps won't display");
+
+	struct loop_ctx ctx = { .wm = &wm, .wl = wl, .dirty = true };
 	bool master = false, need_modeset = false;
 	int front = 0;
 
@@ -333,12 +382,13 @@ int server_run(int argc, char **argv)
 			ctx.dirty = false;
 		}
 
-		struct pollfd pfd[3] = {
+		struct pollfd pfd[4] = {
 			{ .fd = seat_fd(&seat), .events = POLLIN },
 			{ .fd = input ? input_fd(input) : -1, .events = POLLIN },
 			{ .fd = xport ? transport_fd(xport) : -1, .events = POLLIN },
+			{ .fd = wl ? wl_frontend_fd(wl) : -1, .events = POLLIN },
 		};
-		if (poll(pfd, 3, 1000) < 0 && errno != EINTR)
+		if (poll(pfd, 4, 1000) < 0 && errno != EINTR)
 			break;
 		if (pfd[0].revents & POLLIN)
 			seat_dispatch(&seat, 0);
@@ -347,10 +397,20 @@ int server_run(int argc, char **argv)
 		if (xport && (pfd[2].revents & POLLIN))
 			if (transport_process(xport))
 				ctx.dirty = true;
+		if (wl && (pfd[3].revents & POLLIN))
+			if (wl_frontend_dispatch(wl))
+				ctx.dirty = true;
+		/* Keep Wayland keyboard focus in step with the WM's focused window,
+		 * then push any queued pointer/keyboard events out to clients. */
+		if (wl) {
+			wl_frontend_keyboard_focus(wl, stack.focus_id);
+			wl_frontend_flush(wl);
+		}
 	}
 
 	if (master)
 		drmDropMaster(drm_fd);
+	wl_frontend_destroy(wl);
 	transport_destroy(xport);
 	input_destroy(input);
 cleanup:

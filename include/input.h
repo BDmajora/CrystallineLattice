@@ -20,8 +20,10 @@ struct input_event {
 	double ax, ay;       /* MOTION_ABS: absolute position, virtual-screen px */
 	uint32_t button;     /* BUTTON: evdev BTN_* code */
 	uint32_t keysym;     /* KEY: xkb keysym */
+	uint32_t keycode;    /* KEY: raw evdev keycode (for Wayland clients) */
 	bool pressed;        /* BUTTON / KEY: true on press */
 	bool alt_down;       /* KEY: Alt modifier held */
+	bool ctrl_down;      /* KEY: Ctrl modifier held */
 };
 
 typedef void (*input_handler)(const struct input_event *ev, void *user);
