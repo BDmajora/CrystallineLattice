@@ -131,18 +131,32 @@ struct loop_ctx { struct wm *wm; struct wl_frontend *wl; bool dirty; };
  * at that socket. $GLACIER_TERMINAL overrides the default (`foot`). */
 static void spawn_terminal(struct wl_frontend *wl)
 {
-	const char *term = getenv("GLACIER_TERMINAL");
-	if (!term || !term[0])
-		term = "foot";
 	const char *sock = wl ? wl_frontend_socket(wl) : NULL;
-	LOG_INFO("spawn terminal: %s (WAYLAND_DISPLAY=%s)", term, sock ? sock : "?");
+	LOG_INFO("Ctrl+Alt+T → spawning a terminal (WAYLAND_DISPLAY=%s)",
+	         sock ? sock : "(frontend down)");
 	pid_t pid = fork();
+	if (pid < 0) {
+		LOG_WARN("fork for terminal failed");
+		return;
+	}
 	if (pid == 0) {
 		setsid();
 		if (sock)
 			setenv("WAYLAND_DISPLAY", sock, 1);
-		execlp(term, term, (char *)NULL);
-		_exit(127);   /* exec failed (terminal not installed) */
+		/* $GLACIER_TERMINAL wins; otherwise try common terminals in turn.
+		 * execlp only returns on failure, so we fall through to the next. */
+		const char *env = getenv("GLACIER_TERMINAL");
+		if (env && env[0])
+			execlp(env, env, (char *)NULL);
+		static const char *const cands[] = {
+			"foot", "weston-terminal", "alacritty", "kitty",
+			"gnome-terminal", "xterm",
+		};
+		for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++)
+			execlp(cands[i], cands[i], (char *)NULL);
+		fprintf(stderr, "[ERR ] glacier: Ctrl+Alt+T: no terminal found "
+		        "(install foot, or set $GLACIER_TERMINAL)\n");
+		_exit(127);
 	}
 	/* Parent: SIGCHLD is SIG_IGN, so the child is auto-reaped. */
 }
@@ -171,9 +185,17 @@ static void on_input(const struct input_event *ev, void *user)
 			wl_frontend_pointer_button(c->wl, ev->button, ev->pressed);
 		c->dirty = true;
 		break;
-	case INPUT_KEY:
-		if (ev->pressed && ev->ctrl_down && ev->alt_down &&
-		    (ev->keysym == 0x74u || ev->keysym == 0x54u)) { /* 't'/'T' */
+	case INPUT_KEY: {
+		/* Track Ctrl/Alt from raw evdev keycodes, so the Ctrl+Alt+T shortcut
+		 * fires even when no xkb keymap loaded (xkb modifiers would be unset).
+		 * KEY_LEFTCTRL=29 RIGHTCTRL=97 LEFTALT=56 RIGHTALT=100 KEY_T=20. */
+		static bool ctrl_held, alt_held;
+		if (ev->keycode == 29 || ev->keycode == 97)
+			ctrl_held = ev->pressed;
+		else if (ev->keycode == 56 || ev->keycode == 100)
+			alt_held = ev->pressed;
+
+		if (ev->pressed && ctrl_held && alt_held && ev->keycode == 20) {
 			spawn_terminal(c->wl);
 			break;
 		}
@@ -188,6 +210,7 @@ static void on_input(const struct input_event *ev, void *user)
 		if (c->wl)        /* otherwise route to the focused Wayland client */
 			wl_frontend_keyboard_key(c->wl, ev->keycode, ev->pressed);
 		break;
+	}
 	}
 }
 
