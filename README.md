@@ -18,10 +18,20 @@ The full design and phased roadmap live in [DESIGN.md](DESIGN.md).
 - **Phase 2 — input + server-authoritative WM: done.** The server-owned window
   model, WM policy (focus, z-order, interactive move, Alt-Tab), input routing in
   the global virtual-screen space, and `glacier wm` are landed. These are the
-  real server-owned mechanisms, not placeholders. With no client transport yet,
-  `wm` shows a static demo scene (desktop + two windows + cursor).
-- **Next — Phase 3:** the CrystallineLattice transport + `winedrm.drv` (first
-  real Wine client), and back-filling the Phase 1 GL/hardware-cursor work.
+  real server-owned mechanisms, not placeholders. Both relative *and* absolute
+  pointer motion are handled — the latter is what mice on QEMU/VM tablets emit,
+  so the cursor is no longer frozen under virtualization.
+- **Phase 3 — CrystallineLattice transport (Path β): in progress.** The native,
+  server-authoritative client↔server protocol and its server side have landed:
+  a SOCK_SEQPACKET rendezvous socket, the v0 wire format with a min-version
+  handshake, explicit window **roles** (no geometry heuristics), `SCM_RIGHTS`
+  buffer passing (shm/memfd today, dma-buf next) with the render-fence fd
+  already on the wire, and crash-resilient per-client reaping. A trivial native
+  test client, **`glacier-client`**, drives it without Wine. Client windows join
+  the same scene as the demo surfaces, wearing the server-drawn title bar.
+  **Next:** routing input to the focused client, dma-buf/EGLImage import, then
+  `winedrm.drv` (the first real Wine client) and the Phase 1 GL/hardware-cursor
+  back-fill.
 
 > **Black screen / respawn loop?** That means `glacier wm` is exiting during
 > startup, not that a client is missing — the demo scene paints as soon as init
@@ -42,9 +52,13 @@ include/ + src/
   input.*              libinput + xkb keysym/modifier translation
   window.*             server-owned window model (global coords, z-order, roles)
   wm.*                 window-manager policy (focus, interactive move, Alt-Tab)
+  protocol.*           CrystallineLattice wire format: framed I/O + fd passing
+  transport.*          CrystallineLattice server transport   (Path β, Phase 3)
   server.*             display server: WM + CPU compositor   (`glacier wm`)
+  client.c             glacier-client: trivial native test client (no Wine)
   diag_*.c             Phase-0 platform diagnostics
-tests/wm_selftest.c    window-model + WM-policy unit test (no hardware)
+tests/wm_selftest.c          window-model + WM-policy unit test (no hardware)
+tests/transport_selftest.c   transport protocol test over a socketpair (no DRM)
 ```
 
 ## Build
@@ -52,7 +66,7 @@ tests/wm_selftest.c    window-model + WM-policy unit test (no hardware)
 ```sh
 meson setup build      # deps: libdrm gbm egl glesv2 libudev libseat libinput xkbcommon
 ninja -C build
-meson test -C build    # runs the window/WM unit test
+meson test -C build    # runs the window/WM and transport unit tests (no hardware)
 ```
 
 ## Run
@@ -60,12 +74,15 @@ meson test -C build    # runs the window/WM unit test
 ```sh
 glacier wm             # the display server — from a bare VT, user in the 'seat' group
                        #   drag a title bar to move · Alt-Tab to switch · Esc to quit
+glacier-client         # a native CrystallineLattice client: opens one window in `wm`
 glacier enum           # platform diagnostics: enum|firstlight|flip|gl|seatd|hotplug
 ```
 
 The modeset diagnostics and `glacier wm` take DRM master, so run them from a bare
 VT (stop any display manager first). `enum` and `hotplug` are read-only and safe
-under a live session.
+under a live session. With `glacier wm` running, launch `glacier-client` from any
+terminal in the same session (it finds the server via `$XDG_RUNTIME_DIR/glacier-0`,
+overridable with `$GLACIER_SOCKET`) to see a client window appear in the scene.
 
 ## License
 

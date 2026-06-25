@@ -12,11 +12,12 @@
 struct seat;
 struct input;
 
-enum input_kind { INPUT_MOTION, INPUT_BUTTON, INPUT_KEY };
+enum input_kind { INPUT_MOTION, INPUT_MOTION_ABS, INPUT_BUTTON, INPUT_KEY };
 
 struct input_event {
 	enum input_kind kind;
 	double dx, dy;       /* MOTION: relative motion */
+	double ax, ay;       /* MOTION_ABS: absolute position, virtual-screen px */
 	uint32_t button;     /* BUTTON: evdev BTN_* code */
 	uint32_t keysym;     /* KEY: xkb keysym */
 	bool pressed;        /* BUTTON / KEY: true on press */
@@ -25,7 +26,10 @@ struct input_event {
 
 typedef void (*input_handler)(const struct input_event *ev, void *user);
 
-struct input *input_create(struct seat *seat);  /* NULL on failure */
+/* width/height bound the virtual screen so absolute pointing devices (the
+ * common case under VMs/QEMU — usb-tablet/virtio report ABSOLUTE motion, not
+ * relative) can be transformed into virtual-screen pixels. NULL on failure. */
+struct input *input_create(struct seat *seat, int width, int height);
 int   input_fd(struct input *in);
 int   input_dispatch(struct input *in, input_handler cb, void *user);
 void  input_destroy(struct input *in);

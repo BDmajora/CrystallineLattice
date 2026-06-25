@@ -30,6 +30,10 @@ void wm_init(struct wm *wm, struct window_stack *stack, int screen_w, int screen
  * virtual screen; drags the grabbed window when a move is active. */
 void wm_pointer_motion(struct wm *wm, double dx, double dy);
 
+/* Absolute pointer motion (already in virtual-screen px). Used by absolute
+ * pointing devices — the usual case under VMs/QEMU tablets. */
+void wm_pointer_motion_abs(struct wm *wm, double ax, double ay);
+
 /* Pointer button. Left-press over a window focuses+raises it and starts an
  * interactive move; release ends the move. */
 void wm_pointer_button(struct wm *wm, uint32_t button, bool pressed);

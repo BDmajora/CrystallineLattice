@@ -30,6 +30,14 @@ struct window {
 	uint32_t color;         /* placeholder content (XRGB8888) until a
 	                         * client transport supplies a real buffer */
 	char title[64];
+
+	/* Client-supplied content (CPU/shm path). buf is NULL until a transport
+	 * commits a buffer; the compositor then blits these pixels into the
+	 * window's content area instead of the flat placeholder colour. The
+	 * transport owns the mapping lifetime, not the window model. */
+	const uint32_t *buf;    /* mmap'd XRGB8888 pixels, or NULL */
+	int buf_w, buf_h;       /* buffer dimensions in pixels */
+	int buf_stride;         /* row stride in bytes */
 };
 
 #define WIN_MAX 64

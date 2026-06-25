@@ -6,6 +6,7 @@
 #include "input.h"
 #include "window.h"
 #include "wm.h"
+#include "transport.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -48,6 +49,31 @@ static void fill_rect(struct dumb_fb *fb, int x, int y, int w, int h,
 	}
 }
 
+/* Blit a client-committed XRGB8888 buffer into a window's content rect,
+ * clipped to both the buffer and the framebuffer. This is the CPU/shm path;
+ * the GL compositor will sample these as textures instead. */
+static void blit_buffer(struct dumb_fb *fb, const struct window *w, int cy0)
+{
+	int dst_y0 = w->y + cy0;
+	int content_h = w->h - cy0;
+	int rows = content_h < w->buf_h ? content_h : w->buf_h;
+	int cols = w->w < w->buf_w ? w->w : w->buf_w;
+	for (int r = 0; r < rows; r++) {
+		int y = dst_y0 + r;
+		if (y < 0 || y >= fb->h)
+			continue;
+		const uint32_t *src = (const uint32_t *)
+			((const uint8_t *)w->buf + (size_t)r * w->buf_stride);
+		uint32_t *drow = (uint32_t *)(fb->map + (size_t)y * fb->stride);
+		for (int c = 0; c < cols; c++) {
+			int x = w->x + c;
+			if (x < 0 || x >= fb->w)
+				continue;
+			drow[x] = src[c];
+		}
+	}
+}
+
 static void draw_cursor(struct dumb_fb *fb, int cx, int cy)
 {
 	for (int r = 0; r < 16; r++) {
@@ -84,8 +110,13 @@ static void composite(struct dumb_fb *fb, struct wm *wm)
 		bool focused = (w->id == s->focus_id);
 		fill_rect(fb, w->x, w->y, w->w, TITLEBAR_H,
 		          focused ? COLOR_TB_FOCUS : COLOR_TB_PLAIN);
+		/* A client buffer (Phase 3) paints the content; otherwise the
+		 * placeholder colour fills it. The server-drawn title bar is
+		 * identical either way — chrome is the server's, not the client's. */
 		fill_rect(fb, w->x, w->y + TITLEBAR_H, w->w, w->h - TITLEBAR_H,
 		          w->color);
+		if (w->buf)
+			blit_buffer(fb, w, TITLEBAR_H);
 	}
 	draw_cursor(fb, wm->cursor_x, wm->cursor_y);
 }
@@ -100,6 +131,10 @@ static void on_input(const struct input_event *ev, void *user)
 	switch (ev->kind) {
 	case INPUT_MOTION:
 		wm_pointer_motion(c->wm, ev->dx, ev->dy);
+		c->dirty = true;
+		break;
+	case INPUT_MOTION_ABS:
+		wm_pointer_motion_abs(c->wm, ev->ax, ev->ay);
 		c->dirty = true;
 		break;
 	case INPUT_BUTTON:
@@ -235,9 +270,22 @@ int server_run(int argc, char **argv)
 	 * should still light up the desktop, not exit and get respawned by the
 	 * greeter into a black screen. If libinput can't bind (no devices, seat
 	 * grabbed elsewhere, udev empty), warn and run on rather than die. */
-	struct input *input = input_create(&seat);
+	struct input *input = input_create(&seat, k.mode.hdisplay, k.mode.vdisplay);
 	if (!input)
 		LOG_WARN("input unavailable; running without pointer/keyboard");
+
+	/* Phase 3: the CrystallineLattice transport. Native clients connect over
+	 * the rendezvous socket and their windows join the same scene as the demo
+	 * surfaces. Best-effort, like input: a server that can't bind the socket
+	 * should still light the desktop rather than exit into a respawn loop. */
+	struct transport *xport = transport_create(&stack, k.mode.hdisplay,
+	                                            k.mode.vdisplay);
+	if (xport && transport_listen(xport, NULL) != 0) {
+		transport_destroy(xport);
+		xport = NULL;
+	}
+	if (!xport)
+		LOG_WARN("transport unavailable; no CrystallineLattice clients");
 
 	struct loop_ctx ctx = { .wm = &wm, .dirty = true };
 	bool master = false, need_modeset = false;
@@ -285,20 +333,25 @@ int server_run(int argc, char **argv)
 			ctx.dirty = false;
 		}
 
-		struct pollfd pfd[2] = {
+		struct pollfd pfd[3] = {
 			{ .fd = seat_fd(&seat), .events = POLLIN },
 			{ .fd = input ? input_fd(input) : -1, .events = POLLIN },
+			{ .fd = xport ? transport_fd(xport) : -1, .events = POLLIN },
 		};
-		if (poll(pfd, 2, 1000) < 0 && errno != EINTR)
+		if (poll(pfd, 3, 1000) < 0 && errno != EINTR)
 			break;
 		if (pfd[0].revents & POLLIN)
 			seat_dispatch(&seat, 0);
 		if (input && (pfd[1].revents & POLLIN))
 			input_dispatch(input, on_input, &ctx);
+		if (xport && (pfd[2].revents & POLLIN))
+			if (transport_process(xport))
+				ctx.dirty = true;
 	}
 
 	if (master)
 		drmDropMaster(drm_fd);
+	transport_destroy(xport);
 	input_destroy(input);
 cleanup:
 	for (int i = 0; i < have_fb; i++)

@@ -21,6 +21,7 @@ struct input {
 	struct xkb_state *state;
 	struct { int fd; int devid; } devs[MAX_DEVS];
 	int ndev;
+	int width, height;   /* virtual-screen bounds for absolute motion */
 };
 
 /* libinput opens/closes device fds through these — we route to seatd so the
@@ -59,12 +60,14 @@ static const struct libinput_interface iface = {
 	.close_restricted = close_restricted,
 };
 
-struct input *input_create(struct seat *seat)
+struct input *input_create(struct seat *seat, int width, int height)
 {
 	struct input *in = calloc(1, sizeof(*in));
 	if (!in)
 		return NULL;
 	in->seat = seat;
+	in->width = width;
+	in->height = height;
 
 	in->udev = udev_new();
 	if (!in->udev) {
@@ -114,6 +117,21 @@ static void emit_pointer_motion(struct libinput_event *e, input_handler cb, void
 	cb(&ev, u);
 }
 
+/* Absolute motion: the device reports a position, not a delta. libinput
+ * transforms it into our virtual-screen pixel space. Without this, mice on
+ * QEMU/VM tablets (which only emit ABSOLUTE events) leave the cursor frozen. */
+static void emit_pointer_motion_abs(struct input *in, struct libinput_event *e,
+                                    input_handler cb, void *u)
+{
+	struct libinput_event_pointer *p = libinput_event_get_pointer_event(e);
+	struct input_event ev = {
+		.kind = INPUT_MOTION_ABS,
+		.ax = libinput_event_pointer_get_absolute_x_transformed(p, in->width),
+		.ay = libinput_event_pointer_get_absolute_y_transformed(p, in->height),
+	};
+	cb(&ev, u);
+}
+
 static void emit_pointer_button(struct libinput_event *e, input_handler cb, void *u)
 {
 	struct libinput_event_pointer *p = libinput_event_get_pointer_event(e);
@@ -157,6 +175,9 @@ int input_dispatch(struct input *in, input_handler cb, void *user)
 		switch (libinput_event_get_type(e)) {
 		case LIBINPUT_EVENT_POINTER_MOTION:
 			emit_pointer_motion(e, cb, user);
+			break;
+		case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE:
+			emit_pointer_motion_abs(in, e, cb, user);
 			break;
 		case LIBINPUT_EVENT_POINTER_BUTTON:
 			emit_pointer_button(e, cb, user);

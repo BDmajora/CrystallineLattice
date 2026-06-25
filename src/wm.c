@@ -18,17 +18,28 @@ void wm_init(struct wm *wm, struct window_stack *stack, int screen_w, int screen
 	wm->grab_dx = wm->grab_dy = 0;
 }
 
+/* After the cursor moves, drag the grabbed window so its grabbed point stays
+ * under the pointer. Shared by relative and absolute motion. */
+static void drag_grabbed(struct wm *wm)
+{
+	if (wm->moving)
+		window_move(wm->stack, wm->move_id,
+		            wm->cursor_x - wm->grab_dx,
+		            wm->cursor_y - wm->grab_dy);
+}
+
 void wm_pointer_motion(struct wm *wm, double dx, double dy)
 {
 	wm->cursor_x = clampi(wm->cursor_x + (int)dx, 0, wm->screen_w - 1);
 	wm->cursor_y = clampi(wm->cursor_y + (int)dy, 0, wm->screen_h - 1);
+	drag_grabbed(wm);
+}
 
-	if (wm->moving) {
-		/* Keep the grabbed point under the cursor. */
-		window_move(wm->stack, wm->move_id,
-		            wm->cursor_x - wm->grab_dx,
-		            wm->cursor_y - wm->grab_dy);
-	}
+void wm_pointer_motion_abs(struct wm *wm, double ax, double ay)
+{
+	wm->cursor_x = clampi((int)ax, 0, wm->screen_w - 1);
+	wm->cursor_y = clampi((int)ay, 0, wm->screen_h - 1);
+	drag_grabbed(wm);
 }
 
 void wm_pointer_button(struct wm *wm, uint32_t button, bool pressed)
