@@ -58,6 +58,7 @@ sources = [
   'src/protocol.c',     # CrystallineLattice wire format: framed I/O + fd passing
   'src/transport.c',    # CrystallineLattice server transport (Path β, Phase 3)
   'src/wayland.c',      # Wayland compatibility frontend (Transport B, Phase 4)
+  'src/shell.c',        # Wine desktop-shell launcher (explorer.exe, Path β)
   'src/server.c',       # display server: WM + CPU compositor (`glacier wm`)
   'src/diag_enumerate.c',
   'src/diag_firstlight.c',

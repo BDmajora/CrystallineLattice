@@ -58,12 +58,13 @@ void wm_pointer_button(struct wm *wm, uint32_t button, bool pressed)
 		int wx = w->x, wy = w->y;
 
 		window_focus(wm->stack, id);              /* focus + raise */
-		/* The desktop/wallpaper is not draggable. */
-		if (role == WIN_DESKTOP)
+		/* Only NORMAL windows have a server title bar and are draggable; the
+		 * chromeless shell surfaces (desktop, taskbar, tray, menus, tooltips)
+		 * never drag — a press just focuses and passes through to the client. */
+		if (role != WIN_NORMAL)
 			return;
-		/* Only the server-drawn title bar is a drag handle. A press in the
-		 * content area focuses the window but passes through to the client,
-		 * so native apps (Phase 4) stay interactive. */
+		/* Only the title bar is a drag handle. A press in the content area
+		 * focuses the window but passes through to the client. */
 		if (wm->cursor_y - wy >= DECOR_TITLEBAR_H)
 			return;
 		wm->moving = true;

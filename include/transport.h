@@ -28,6 +28,10 @@ int transport_listen(struct transport *t, const char *path);
 /* The single fd the server should poll() for readability. */
 int transport_fd(struct transport *t);
 
+/* The bound rendezvous socket path (valid after transport_listen), so the
+ * server can hand it to a spawned client as $GLACIER_SOCKET. */
+const char *transport_socket_path(struct transport *t);
+
 /* Service all ready events (new connections, client messages, disconnects).
  * Returns true if the scene changed and the server should recomposite. */
 bool transport_process(struct transport *t);

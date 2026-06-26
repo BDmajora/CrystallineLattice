@@ -144,9 +144,13 @@ static void on_create_window(struct transport *t, struct cl_client *c,
 	cw->client_wid = m->wid;
 	cw->server_id = id;
 
-	/* Server policy: a new normal window takes focus (and is raised). */
+	/* Server policy by role: a new NORMAL window takes focus (and raises);
+	 * the DESKTOP (wallpaper) sinks to the bottom; taskbar/tray/menus are
+	 * created on top (window_create already adds there) and don't take focus. */
 	if (role == WIN_NORMAL)
 		window_focus(t->stack, id);
+	else if (role == WIN_DESKTOP)
+		window_lower(t->stack, id);
 
 	struct window *win = window_by_id(t->stack, id);
 	struct cl_configure cfg = {
@@ -471,20 +475,33 @@ static bool find_by_server_id(struct transport *t, uint32_t server_id,
 	return false;
 }
 
+/* Title-bar height for a window: NORMAL windows wear server chrome, the
+ * chromeless shell surfaces (desktop/taskbar/tray/menu/tooltip) do not. The
+ * client buffer's top-left maps to (w->x, w->y + titlebar), so input is sent in
+ * coordinates relative to that origin. */
+static int win_titlebar(const struct window *w)
+{
+	return w->role == WIN_NORMAL ? DECOR_TITLEBAR_H : 0;
+}
+
 void transport_pointer_motion(struct transport *t, int cursor_x, int cursor_y)
 {
 	struct window *w = window_at(t->stack, cursor_x, cursor_y);
 	struct cl_client *c;
 	struct cl_win *cw;
+	int titlebar;
 
-	if (!w || cursor_y < w->y + DECOR_TITLEBAR_H)
-		return;                  /* over the server title bar, or nothing */
+	if (!w)
+		return;
+	titlebar = win_titlebar(w);
+	if (cursor_y < w->y + titlebar)
+		return;                  /* over the server title bar */
 	if (!find_by_server_id(t, w->id, &c, &cw))
 		return;                  /* not a CrystallineLattice client window */
 
 	struct cl_input m = {
 		.type = CL_INPUT, .wid = cw->client_wid, .kind = CL_IN_MOTION,
-		.x = cursor_x - w->x, .y = cursor_y - w->y - DECOR_TITLEBAR_H,
+		.x = cursor_x - w->x, .y = cursor_y - w->y - titlebar,
 	};
 	cl_send(c->fd, &m, sizeof(m), NULL, 0);
 }
@@ -495,15 +512,19 @@ void transport_pointer_button(struct transport *t, uint32_t button, bool pressed
 	struct window *w = window_at(t->stack, cursor_x, cursor_y);
 	struct cl_client *c;
 	struct cl_win *cw;
+	int titlebar;
 
-	if (!w || cursor_y < w->y + DECOR_TITLEBAR_H)
+	if (!w)
+		return;
+	titlebar = win_titlebar(w);
+	if (cursor_y < w->y + titlebar)
 		return;                  /* title bar press is the WM's (drag) */
 	if (!find_by_server_id(t, w->id, &c, &cw))
 		return;
 
 	struct cl_input m = {
 		.type = CL_INPUT, .wid = cw->client_wid, .kind = CL_IN_BUTTON,
-		.x = cursor_x - w->x, .y = cursor_y - w->y - DECOR_TITLEBAR_H,
+		.x = cursor_x - w->x, .y = cursor_y - w->y - titlebar,
 		.code = button, .pressed = pressed,
 	};
 	cl_send(c->fd, &m, sizeof(m), NULL, 0);
@@ -553,6 +574,11 @@ void transport_update_focus(struct transport *t, uint32_t focus_id)
 int transport_fd(struct transport *t)
 {
 	return t->epoll_fd;
+}
+
+const char *transport_socket_path(struct transport *t)
+{
+	return t->path;
 }
 
 static void accept_pending(struct transport *t)

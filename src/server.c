@@ -8,6 +8,7 @@
 #include "wm.h"
 #include "transport.h"
 #include "wayland.h"
+#include "shell.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -102,23 +103,23 @@ static void composite(struct dumb_fb *fb, struct wm *wm)
 		struct window *w = &s->windows[i];
 		if (!w->mapped)
 			continue;
-		if (w->role == WIN_DESKTOP) {
-			fill_rect(fb, w->x, w->y, w->w, w->h, w->color);
-			continue;
+		/* Only NORMAL windows wear a server-drawn title bar. The shell
+		 * surfaces — desktop (wallpaper), taskbar, tray, menus, tooltips —
+		 * are chromeless and own their whole rect, so they read as real
+		 * Windows shell parts rather than decorated app windows. The role
+		 * comes from the client's explicit registration, not a heuristic. */
+		bool chrome = (w->role == WIN_NORMAL);
+		int cy0 = chrome ? TITLEBAR_H : 0;
+		if (chrome) {
+			bool focused = (w->id == s->focus_id);
+			fill_rect(fb, w->x, w->y, w->w, TITLEBAR_H,
+			          focused ? COLOR_TB_FOCUS : COLOR_TB_PLAIN);
 		}
-		/* Server-side decoration: a title bar the server draws for every
-		 * window, so chrome is identical no matter which transport
-		 * delivered the content. Focused windows get the accent colour. */
-		bool focused = (w->id == s->focus_id);
-		fill_rect(fb, w->x, w->y, w->w, TITLEBAR_H,
-		          focused ? COLOR_TB_FOCUS : COLOR_TB_PLAIN);
-		/* A client buffer (Phase 3) paints the content; otherwise the
-		 * placeholder colour fills it. The server-drawn title bar is
-		 * identical either way — chrome is the server's, not the client's. */
-		fill_rect(fb, w->x, w->y + TITLEBAR_H, w->w, w->h - TITLEBAR_H,
-		          w->color);
+		/* A client buffer paints the content; until one arrives the
+		 * placeholder colour fills it (and is the wallpaper for DESKTOP). */
+		fill_rect(fb, w->x, w->y + cy0, w->w, w->h - cy0, w->color);
 		if (w->buf)
-			blit_buffer(fb, w, TITLEBAR_H);
+			blit_buffer(fb, w, cy0);
 	}
 	draw_cursor(fb, wm->cursor_x, wm->cursor_y);
 }
@@ -356,7 +357,12 @@ int server_run(int argc, char **argv)
 
 	struct window_stack stack;
 	window_stack_init(&stack);
-	seed_windows(&stack, k.mode.hdisplay, k.mode.vdisplay);
+	/* The real session boots straight into the Wine shell (below); the demo
+	 * surfaces are only for headless/dev runs. $GLACIER_NO_SHELL=1 keeps the
+	 * demo scene and skips launching Wine. */
+	bool want_shell = !getenv("GLACIER_NO_SHELL");
+	if (!want_shell)
+		seed_windows(&stack, k.mode.hdisplay, k.mode.vdisplay);
 
 	struct wm wm;
 	wm_init(&wm, &stack, k.mode.hdisplay, k.mode.vdisplay);
@@ -381,6 +387,18 @@ int server_run(int argc, char **argv)
 	}
 	if (!xport)
 		LOG_WARN("transport unavailable; no CrystallineLattice clients");
+
+	/* Launch the Windows shell (explorer.exe /desktop=shell) as our first
+	 * CrystallineLattice client — the desktop frostedglass used to provide.
+	 * Best-effort, and only once the transport is listening (the shell connects
+	 * back to it via $GLACIER_SOCKET). */
+	if (want_shell) {
+		if (xport)
+			shell_launch(k.mode.hdisplay, k.mode.vdisplay,
+			             transport_socket_path(xport));
+		else
+			LOG_WARN("shell requested but transport down; not launching Wine");
+	}
 
 	/* Phase 4: Transport B — glacier's own minimal Wayland frontend, so native
 	 * Linux apps (GTK/Qt/Electron, Xwayland-bridged X11) display as peers of
