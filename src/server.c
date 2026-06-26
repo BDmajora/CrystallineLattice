@@ -125,7 +125,12 @@ static void composite(struct dumb_fb *fb, struct wm *wm)
 
 /* ---- input routing --------------------------------------------------- */
 
-struct loop_ctx { struct wm *wm; struct wl_frontend *wl; bool dirty; };
+struct loop_ctx {
+	struct wm *wm;
+	struct wl_frontend *wl;
+	struct transport *xport;   /* CrystallineLattice clients (Transport A) */
+	bool dirty;
+};
 
 /* Ctrl+Alt+T → a terminal. The terminal is a native Wayland client, so it
  * connects back to glacier's own Wayland frontend (Transport B); we point it
@@ -183,20 +188,27 @@ static void on_input(const struct input_event *ev, void *user)
 		wm_pointer_motion(c->wm, ev->dx, ev->dy);
 		if (c->wl)
 			wl_frontend_pointer_motion(c->wl, c->wm->cursor_x, c->wm->cursor_y);
+		if (c->xport)
+			transport_pointer_motion(c->xport, c->wm->cursor_x, c->wm->cursor_y);
 		c->dirty = true;
 		break;
 	case INPUT_MOTION_ABS:
 		wm_pointer_motion_abs(c->wm, ev->ax, ev->ay);
 		if (c->wl)
 			wl_frontend_pointer_motion(c->wl, c->wm->cursor_x, c->wm->cursor_y);
+		if (c->xport)
+			transport_pointer_motion(c->xport, c->wm->cursor_x, c->wm->cursor_y);
 		c->dirty = true;
 		break;
 	case INPUT_BUTTON:
 		/* The WM focuses (and drags on the title bar); a content press also
-		 * reaches the focused Wayland client. */
+		 * reaches the focused client (Wayland or CrystallineLattice). */
 		wm_pointer_button(c->wm, ev->button, ev->pressed);
 		if (c->wl)
 			wl_frontend_pointer_button(c->wl, ev->button, ev->pressed);
+		if (c->xport)
+			transport_pointer_button(c->xport, ev->button, ev->pressed,
+			                         c->wm->cursor_x, c->wm->cursor_y);
 		c->dirty = true;
 		break;
 	case INPUT_KEY: {
@@ -221,8 +233,14 @@ static void on_input(const struct input_event *ev, void *user)
 			c->dirty = true;
 			break;        /* WM consumed it (Alt-Tab) — don't forward */
 		}
-		if (c->wl)        /* otherwise route to the focused Wayland client */
+		/* Otherwise route to the focused client. The Wayland frontend takes a
+		 * raw evdev keycode; CrystallineLattice takes the xkb keysym, which the
+		 * driver maps to a Win32 VK (DESIGN.md §3.3). */
+		if (c->wl)
 			wl_frontend_keyboard_key(c->wl, ev->keycode, ev->pressed);
+		if (c->xport)
+			transport_keyboard_key(c->xport, c->wm->stack->focus_id,
+			                       ev->keysym, ev->pressed);
 		break;
 	}
 	}
@@ -373,7 +391,7 @@ int server_run(int argc, char **argv)
 	if (!wl)
 		LOG_WARN("wayland frontend unavailable; native Linux apps won't display");
 
-	struct loop_ctx ctx = { .wm = &wm, .wl = wl, .dirty = true };
+	struct loop_ctx ctx = { .wm = &wm, .wl = wl, .xport = xport, .dirty = true };
 	bool master = false, need_modeset = false;
 	int front = 0;
 
@@ -443,6 +461,9 @@ int server_run(int argc, char **argv)
 			wl_frontend_keyboard_focus(wl, stack.focus_id);
 			wl_frontend_flush(wl);
 		}
+		/* Mirror focus transitions to CrystallineLattice clients (CL_FOCUS). */
+		if (xport)
+			transport_update_focus(xport, stack.focus_id);
 	}
 
 	if (master)

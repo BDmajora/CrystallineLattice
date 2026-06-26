@@ -50,6 +50,7 @@ struct transport {
 	int listen_fd;           /* -1 until transport_listen() */
 	char path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 	struct cl_client clients[CL_MAX_CLIENTS];
+	uint32_t focused_server_id; /* last focus reported to clients (CL_FOCUS) */
 };
 
 /* ---- small helpers --------------------------------------------------- */
@@ -102,6 +103,10 @@ static void win_drop_buffer(struct cl_win *w, struct window_stack *stack)
 	}
 }
 
+/* Defined in the input-routing section; used by on_create_window for the
+ * initial focus and by transport_update_focus for later transitions. */
+static void notify_focus(struct transport *t, uint32_t new_focus);
+
 /* ---- server → client events ------------------------------------------ */
 
 static void send_welcome(struct transport *t, int fd)
@@ -149,9 +154,12 @@ static void on_create_window(struct transport *t, struct cl_client *c,
 		.x = win->x, .y = win->y, .w = (uint32_t)win->w, .h = (uint32_t)win->h,
 	};
 	cl_send(c->fd, &cfg, sizeof(cfg), NULL, 0);
-	struct cl_focus foc = { .type = CL_FOCUS, .wid = m->wid,
-	                        .focused = (role == WIN_NORMAL) };
-	cl_send(c->fd, &foc, sizeof(foc), NULL, 0);
+	/* A new NORMAL window took focus above; emit the CL_FOCUS transition now
+	 * (focus-lost to any previously focused client, focus-gained to this one).
+	 * Later focus changes (Alt-Tab, click) flow through transport_update_focus
+	 * from the server loop, which shares this same path. */
+	if (role == WIN_NORMAL)
+		notify_focus(t, id);
 
 	LOG_INFO("transport: window %u (role=%d %dx%d) → server id %u",
 	         m->wid, (int)role, w, h, id);
@@ -438,6 +446,108 @@ int transport_add_client(struct transport *t, int fd)
 		return -1;
 	}
 	return 0;
+}
+
+/* ---- input routing to clients (M2) ----------------------------------- */
+
+static bool find_by_server_id(struct transport *t, uint32_t server_id,
+                              struct cl_client **co, struct cl_win **wo)
+{
+	if (!server_id)
+		return false;
+	for (int i = 0; i < CL_MAX_CLIENTS; i++) {
+		struct cl_client *c = &t->clients[i];
+		if (c->fd < 0)
+			continue;
+		for (int j = 0; j < WIN_MAX; j++) {
+			if (c->wins[j].client_wid &&
+			    c->wins[j].server_id == server_id) {
+				*co = c;
+				*wo = &c->wins[j];
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void transport_pointer_motion(struct transport *t, int cursor_x, int cursor_y)
+{
+	struct window *w = window_at(t->stack, cursor_x, cursor_y);
+	struct cl_client *c;
+	struct cl_win *cw;
+
+	if (!w || cursor_y < w->y + DECOR_TITLEBAR_H)
+		return;                  /* over the server title bar, or nothing */
+	if (!find_by_server_id(t, w->id, &c, &cw))
+		return;                  /* not a CrystallineLattice client window */
+
+	struct cl_input m = {
+		.type = CL_INPUT, .wid = cw->client_wid, .kind = CL_IN_MOTION,
+		.x = cursor_x - w->x, .y = cursor_y - w->y - DECOR_TITLEBAR_H,
+	};
+	cl_send(c->fd, &m, sizeof(m), NULL, 0);
+}
+
+void transport_pointer_button(struct transport *t, uint32_t button, bool pressed,
+                              int cursor_x, int cursor_y)
+{
+	struct window *w = window_at(t->stack, cursor_x, cursor_y);
+	struct cl_client *c;
+	struct cl_win *cw;
+
+	if (!w || cursor_y < w->y + DECOR_TITLEBAR_H)
+		return;                  /* title bar press is the WM's (drag) */
+	if (!find_by_server_id(t, w->id, &c, &cw))
+		return;
+
+	struct cl_input m = {
+		.type = CL_INPUT, .wid = cw->client_wid, .kind = CL_IN_BUTTON,
+		.x = cursor_x - w->x, .y = cursor_y - w->y - DECOR_TITLEBAR_H,
+		.code = button, .pressed = pressed,
+	};
+	cl_send(c->fd, &m, sizeof(m), NULL, 0);
+}
+
+void transport_keyboard_key(struct transport *t, uint32_t focus_id,
+                            uint32_t keysym, bool pressed)
+{
+	struct cl_client *c;
+	struct cl_win *cw;
+
+	if (!find_by_server_id(t, focus_id, &c, &cw))
+		return;
+
+	struct cl_input k = {
+		.type = CL_INPUT, .wid = cw->client_wid, .kind = CL_IN_KEY,
+		.code = keysym, .pressed = pressed,
+	};
+	cl_send(c->fd, &k, sizeof(k), NULL, 0);
+}
+
+static void notify_focus(struct transport *t, uint32_t new_focus)
+{
+	struct cl_client *c;
+	struct cl_win *cw;
+
+	if (new_focus == t->focused_server_id)
+		return;
+	if (find_by_server_id(t, t->focused_server_id, &c, &cw)) {
+		struct cl_focus f = { .type = CL_FOCUS, .wid = cw->client_wid,
+		                      .focused = 0 };
+		cl_send(c->fd, &f, sizeof(f), NULL, 0);
+	}
+	t->focused_server_id = new_focus;
+	if (find_by_server_id(t, new_focus, &c, &cw)) {
+		struct cl_focus f = { .type = CL_FOCUS, .wid = cw->client_wid,
+		                      .focused = 1 };
+		cl_send(c->fd, &f, sizeof(f), NULL, 0);
+	}
+}
+
+void transport_update_focus(struct transport *t, uint32_t focus_id)
+{
+	notify_focus(t, focus_id);
 }
 
 int transport_fd(struct transport *t)

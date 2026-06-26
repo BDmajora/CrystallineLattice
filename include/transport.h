@@ -12,6 +12,7 @@
 #define GLACIER_TRANSPORT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct window_stack;
 struct transport;
@@ -34,6 +35,27 @@ bool transport_process(struct transport *t);
 /* Register an already-connected client fd. Used by accept(), and directly by
  * the headless self-test to inject a socketpair end. Returns 0 on success. */
 int transport_add_client(struct transport *t, int fd);
+
+/* ---- input routing to CrystallineLattice clients (Phase 3, M2) -------- *
+ * The server owns the cursor and focus; these forward the relevant input to
+ * the owning client as CL_INPUT, in window-local content coordinates. They are
+ * no-ops when the target window isn't a CL client (e.g. a Wayland-frontend
+ * window or the desktop), so the server can call them unconditionally. */
+
+/* Pointer at the given virtual-screen position → the topmost CL client window
+ * under the cursor (content area only; a press/move over the server title bar
+ * belongs to the WM, not the client). */
+void transport_pointer_motion(struct transport *t, int cursor_x, int cursor_y);
+void transport_pointer_button(struct transport *t, uint32_t button, bool pressed,
+                              int cursor_x, int cursor_y);
+
+/* Key (xkb keysym) → the CL client that owns the focused window. */
+void transport_keyboard_key(struct transport *t, uint32_t focus_id,
+                            uint32_t keysym, bool pressed);
+
+/* Emit CL_FOCUS transitions when the server's focused window changes; call once
+ * per loop with the current stack focus id. */
+void transport_update_focus(struct transport *t, uint32_t focus_id);
 
 void transport_destroy(struct transport *t);
 
