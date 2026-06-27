@@ -213,6 +213,15 @@ void shell_launch(int width, int height, const char *cl_socket_path)
 	ensure_prefix_media();
 	configure_registry();
 
+	/* Launch the wallpaper painter (desktop.exe) as a sibling Wine client; it
+	 * registers a DESKTOP-role window glacier pins to the bottom at screen size.
+	 * The prefix/registry are ready by now, and it inherits $GLACIER_SOCKET. */
+	if (fork() == 0) {
+		setsid();
+		execlp("wine", "wine", "desktop.exe", (char *)NULL);
+		_exit(127);
+	}
+
 	char desktop_arg[64];
 	snprintf(desktop_arg, sizeof(desktop_arg), "/desktop=shell,%dx%d",
 	         width, height);

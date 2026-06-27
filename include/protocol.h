@@ -61,6 +61,7 @@ enum cl_msg_type {
 	CL_FOCUS,            /* focus gained/lost */
 	CL_CLOSE,            /* shell asks the window to close */
 	CL_INPUT,            /* pointer/keyboard routed to the focused window */
+	CL_SCREEN,           /* virtual-screen size changed (resolution change) */
 };
 
 /* Window roles — mirror enum win_role so the mapping is a cast-with-bounds. */
@@ -186,6 +187,14 @@ struct cl_input {
 	int32_t  x, y;       /* MOTION: pointer in window-local coords */
 	uint32_t code;       /* BUTTON: evdev BTN_*; KEY: xkb keysym */
 	uint32_t pressed;    /* BUTTON/KEY */
+};
+
+/* The virtual screen resized (the shell changed resolution). The driver resizes
+ * Wine's virtual desktop to match, which broadcasts WM_DISPLAYCHANGE so the
+ * taskbar and wallpaper refit — exactly the Windows behaviour. */
+struct cl_screen {
+	uint32_t type;       /* CL_SCREEN */
+	uint32_t w, h;
 };
 
 /* ---- framed send/recv with SCM_RIGHTS (protocol.c) ------------------- */

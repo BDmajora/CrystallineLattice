@@ -48,6 +48,11 @@ const char *transport_socket_path(struct transport *t);
  * change). Existing clients keep their windows; new connections see the size. */
 void transport_set_screen(struct transport *t, int w, int h);
 
+/* Tell every connected client the virtual screen resized (CL_SCREEN), so each
+ * resizes its Wine virtual desktop and the shell refits. Also updates the size
+ * advertised to new clients. */
+void transport_broadcast_screen(struct transport *t, int w, int h);
+
 /* The cursor shape last set by a client; the compositor draws it. */
 const struct cl_cursor *transport_cursor(struct transport *t);
 

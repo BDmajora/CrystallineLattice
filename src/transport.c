@@ -236,12 +236,15 @@ static void on_create_window(struct transport *t, struct cl_client *c,
 	window_by_id(t->stack, id)->app_decorated = true;
 
 	/* Server policy by role: a new NORMAL window takes focus (and raises);
-	 * the DESKTOP (wallpaper) sinks to the bottom; taskbar/tray/menus are
-	 * created on top (window_create already adds there) and don't take focus. */
-	if (role == WIN_NORMAL)
+	 * the DESKTOP (wallpaper) is forced to exactly cover the screen and sinks to
+	 * the bottom; taskbar/tray/menus are created on top (window_create already
+	 * adds there) and don't take focus. */
+	if (role == WIN_NORMAL) {
 		window_focus(t->stack, id);
-	else if (role == WIN_DESKTOP)
+	} else if (role == WIN_DESKTOP) {
+		window_set_geometry(t->stack, id, 0, 0, t->sw, t->sh);
 		window_lower(t->stack, id);
+	}
 
 	struct window *win = window_by_id(t->stack, id);
 	struct cl_configure cfg = {
@@ -348,7 +351,13 @@ static void on_set_geometry(struct transport *t, struct cl_client *c,
                             const struct cl_set_geometry *m)
 {
 	struct cl_win *cw = win_find(c, m->wid);
+	struct window *w;
 	if (!cw)
+		return;
+	/* The wallpaper is server-owned at exactly screen size; ignore its own
+	 * geometry requests so it always covers the monitor and stays at the bottom. */
+	w = window_by_id(t->stack, cw->server_id);
+	if (w && w->role == WIN_DESKTOP)
 		return;
 	window_set_geometry(t->stack, cw->server_id,
 	                    m->x, m->y, (int)m->w, (int)m->h);
@@ -493,15 +502,22 @@ static void client_drop(struct transport *t, struct cl_client *c, bool *dirty)
 {
 	struct cl_orphan *o = NULL;
 	int nwin = 0;
+	bool is_shell = false;
 
 	for (int i = 0; i < WIN_MAX; i++)
-		if (c->wins[i].client_wid)
+		if (c->wins[i].client_wid) {
+			struct window *w = window_by_id(t->stack, c->wins[i].server_id);
 			nwin++;
+			if (w && (w->role == WIN_TASKBAR || w->role == WIN_DESKTOP ||
+			          w->role == WIN_TRAY))
+				is_shell = true;
+		}
 
-	/* Preserve the client's windows for a grace period so a crash/restart can
-	 * reclaim them (needs a token and a free orphan slot). The windows stay in
-	 * the scene — still showing their last frame — until reclaimed or expired. */
-	if (nwin && c->token) {
+	/* Preserve windows for a grace period only for *shell* clients (taskbar /
+	 * desktop / tray), whose loss would be desktop-ending, so a shell crash can
+	 * reclaim them. A regular app's windows go immediately on close/crash — that
+	 * is graceful close, not a 5-second ghost. (Needs a token + free orphan.) */
+	if (nwin && c->token && is_shell) {
 		for (int i = 0; i < CL_MAX_CLIENTS; i++)
 			if (t->orphans[i].token == 0) { o = &t->orphans[i]; break; }
 	}
@@ -795,6 +811,16 @@ void transport_set_screen(struct transport *t, int w, int h)
 {
 	t->sw = w;
 	t->sh = h;
+}
+
+void transport_broadcast_screen(struct transport *t, int w, int h)
+{
+	struct cl_screen m = { .type = CL_SCREEN, .w = (uint32_t)w, .h = (uint32_t)h };
+	t->sw = w;
+	t->sh = h;
+	for (int i = 0; i < CL_MAX_CLIENTS; i++)
+		if (t->clients[i].fd >= 0 && t->clients[i].hello)
+			cl_send(t->clients[i].fd, &m, sizeof(m), NULL, 0);
 }
 
 const struct cl_cursor *transport_cursor(struct transport *t)

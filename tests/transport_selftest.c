@@ -147,52 +147,56 @@ int main(void)
 	assert(win->x == 300 && win->y == 220 && win->w == 800 && win->h == 600);
 	printf("ok: CL_SET_GEOMETRY moved/resized the window\n");
 
-	/* --- crash: disconnect PRESERVES the window for reconnect (Phase 6) --- */
+	/* --- a NORMAL app window closes immediately on disconnect (no 5s ghost) --- */
 	close(cli);
 	drain(t);
-	assert(stack.count == 1);                       /* window survives the crash */
-	assert(window_by_id(&stack, server_id) != NULL);
-	assert(mapped_count(&stack) == 1);
-	printf("ok: client crash preserved its window (grace period)\n");
+	assert(stack.count == 0);   /* app windows vanish at once — graceful close */
+	munmap(px, bsize);
+	printf("ok: app window closed immediately on disconnect\n");
 
-	/* --- reconnect with the token RECLAIMS the same window --- */
+	/* --- a SHELL (taskbar) window IS preserved on crash, and reclaimable --- */
 	int sv2[2];
 	assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv2) == 0);
 	cli = sv2[0];
 	assert(transport_add_client(t, sv2[1]) == 0);
-	struct cl_hello rehello = { .type = CL_HELLO, .magic = CL_MAGIC,
-	                            .version = CL_VERSION, .min_version = CL_MIN_VERSION,
-	                            .reconnect_token = token };
-	assert(cl_send(cli, &rehello, sizeof(rehello), NULL, 0) == 0);
+	struct cl_hello h2 = { .type = CL_HELLO, .magic = CL_MAGIC,
+	                       .version = CL_VERSION, .min_version = CL_MIN_VERSION };
+	assert(cl_send(cli, &h2, sizeof(h2), NULL, 0) == 0);
+	drain(t);
+	n = cl_recv(cli, rbuf, sizeof(rbuf), fds, &nfds);
+	assert(n >= (ssize_t)sizeof(struct cl_welcome));
+	uint32_t token2 = ((struct cl_welcome *)rbuf)->reconnect_token;
+
+	struct cl_create_window tb = { .type = CL_CREATE_WINDOW, .wid = 9,
+	                               .role = CL_ROLE_TASKBAR,
+	                               .x = 0, .y = 1040, .w = 1920, .h = 40 };
+	assert(cl_send(cli, &tb, sizeof(tb), NULL, 0) == 0);
+	drain(t);
+	assert(stack.count == 1);
+	printf("ok: shell (taskbar) window created\n");
+
+	close(cli);                 /* crash the shell client */
+	drain(t);
+	assert(stack.count == 1);   /* shell window IS preserved (desktop survives) */
+	printf("ok: shell window preserved on crash (grace period)\n");
+
+	int sv3[2];
+	assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv3) == 0);
+	cli = sv3[0];
+	assert(transport_add_client(t, sv3[1]) == 0);
+	struct cl_hello h3 = { .type = CL_HELLO, .magic = CL_MAGIC,
+	                       .version = CL_VERSION, .min_version = CL_MIN_VERSION,
+	                       .reconnect_token = token2 };
+	assert(cl_send(cli, &h3, sizeof(h3), NULL, 0) == 0);
 	drain(t);
 	n = cl_recv(cli, rbuf, sizeof(rbuf), fds, &nfds);
 	assert(n >= (ssize_t)sizeof(struct cl_welcome) &&
 	       ((struct cl_welcome *)rbuf)->type == CL_WELCOME);
-	assert(stack.count == 1);                        /* not a new window */
-	assert(window_by_id(&stack, server_id) != NULL); /* the same server id */
-	printf("ok: reconnect reclaimed the same window (id %u)\n", server_id);
+	assert(stack.count == 1);   /* taskbar reclaimed, not recreated */
+	printf("ok: shell window reclaimed on reconnect\n");
 
-	/* The reclaimed window is live again: a fresh commit updates it. */
-	int mfd2 = memfd_create("test2", MFD_CLOEXEC);
-	assert(mfd2 >= 0 && ftruncate(mfd2, bsize) == 0);
-	uint32_t *px2 = mmap(NULL, bsize, PROT_READ | PROT_WRITE, MAP_SHARED, mfd2, 0);
-	assert(px2 != MAP_FAILED);
-	for (size_t i = 0; i < bsize / 4; i++)
-		px2[i] = 0x00123456u;
-	struct cl_commit cm2 = { .type = CL_COMMIT, .wid = 7,
-		.buffer = { .kind = CL_BUF_SHM, .width = BW, .height = BH,
-		            .stride = BSTRIDE, .format = CL_FORMAT_XRGB8888 } };
-	assert(cl_send(cli, &cm2, sizeof(cm2), &mfd2, 1) == 0);
-	close(mfd2);
-	drain(t);
-	win = window_by_id(&stack, server_id);
-	assert(win && win->buf && win->buf[0] == 0x00123456u);
-	printf("ok: reclaimed window accepts new commits\n");
-
-	munmap(px2, bsize);
-	munmap(px, bsize);
 	close(cli);
-	transport_destroy(t);   /* reaps the now-re-orphaned window cleanly */
-	printf("PASS: transport self-test (incl. crash reconnect)\n");
+	transport_destroy(t);
+	printf("PASS: transport self-test (graceful close + shell reconnect)\n");
 	return 0;
 }

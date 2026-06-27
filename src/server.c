@@ -351,8 +351,18 @@ static bool apply_mode_cb(void *user, int w, int h, int refresh_mhz)
 	m->wm->screen_h = nh;
 	if (m->wm->cursor_x >= nw) m->wm->cursor_x = nw - 1;
 	if (m->wm->cursor_y >= nh) m->wm->cursor_y = nh - 1;
+
+	/* Keep the wallpaper exactly covering the new screen. */
+	for (int i = 0; i < m->wm->stack->count; i++) {
+		struct window *w = &m->wm->stack->windows[i];
+		if (w->role == WIN_DESKTOP)
+			window_set_geometry(m->wm->stack, w->id, 0, 0, nw, nh);
+	}
+
+	/* Tell the clients so Wine resizes its virtual desktop → WM_DISPLAYCHANGE →
+	 * the taskbar and wallpaper refit, exactly like Windows. */
 	if (m->xport)
-		transport_set_screen(m->xport, nw, nh);
+		transport_broadcast_screen(m->xport, nw, nh);
 
 	*m->need_modeset = true;
 	*m->dirty = true;
