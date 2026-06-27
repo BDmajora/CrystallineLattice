@@ -75,7 +75,10 @@ int main(void)
 	struct cl_welcome *wel = (void *)rbuf;
 	assert(wel->type == CL_WELCOME);
 	assert(wel->screen_w == SCREEN_W && wel->screen_h == SCREEN_H);
-	printf("ok: handshake → WELCOME %ux%u\n", wel->screen_w, wel->screen_h);
+	uint32_t token = wel->reconnect_token;   /* for the crash-reconnect test below */
+	assert(token != 0);
+	printf("ok: handshake → WELCOME %ux%u (token %u)\n",
+	       wel->screen_w, wel->screen_h, token);
 
 	assert(stack.count == 0);   /* no window yet */
 
@@ -135,15 +138,61 @@ int main(void)
 	assert(win->buf[0] == 0x00abcdefu);   /* server mmap sees client pixels */
 	printf("ok: COMMIT mapped a %dx%d buffer the server can read\n", BW, BH);
 
-	/* --- disconnect reaps the window (crash-resilience) --- */
+	/* --- client moved/resized its own window (CL_SET_GEOMETRY) --- */
+	struct cl_set_geometry sg = { .type = CL_SET_GEOMETRY, .wid = 7,
+	                              .x = 300, .y = 220, .w = 800, .h = 600 };
+	assert(cl_send(cli, &sg, sizeof(sg), NULL, 0) == 0);
+	drain(t);
+	win = window_by_id(&stack, server_id);
+	assert(win->x == 300 && win->y == 220 && win->w == 800 && win->h == 600);
+	printf("ok: CL_SET_GEOMETRY moved/resized the window\n");
+
+	/* --- crash: disconnect PRESERVES the window for reconnect (Phase 6) --- */
 	close(cli);
 	drain(t);
-	assert(stack.count == 0);
-	assert(mapped_count(&stack) == 0);
-	printf("ok: client disconnect reaped its window\n");
+	assert(stack.count == 1);                       /* window survives the crash */
+	assert(window_by_id(&stack, server_id) != NULL);
+	assert(mapped_count(&stack) == 1);
+	printf("ok: client crash preserved its window (grace period)\n");
 
+	/* --- reconnect with the token RECLAIMS the same window --- */
+	int sv2[2];
+	assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv2) == 0);
+	cli = sv2[0];
+	assert(transport_add_client(t, sv2[1]) == 0);
+	struct cl_hello rehello = { .type = CL_HELLO, .magic = CL_MAGIC,
+	                            .version = CL_VERSION, .min_version = CL_MIN_VERSION,
+	                            .reconnect_token = token };
+	assert(cl_send(cli, &rehello, sizeof(rehello), NULL, 0) == 0);
+	drain(t);
+	n = cl_recv(cli, rbuf, sizeof(rbuf), fds, &nfds);
+	assert(n >= (ssize_t)sizeof(struct cl_welcome) &&
+	       ((struct cl_welcome *)rbuf)->type == CL_WELCOME);
+	assert(stack.count == 1);                        /* not a new window */
+	assert(window_by_id(&stack, server_id) != NULL); /* the same server id */
+	printf("ok: reconnect reclaimed the same window (id %u)\n", server_id);
+
+	/* The reclaimed window is live again: a fresh commit updates it. */
+	int mfd2 = memfd_create("test2", MFD_CLOEXEC);
+	assert(mfd2 >= 0 && ftruncate(mfd2, bsize) == 0);
+	uint32_t *px2 = mmap(NULL, bsize, PROT_READ | PROT_WRITE, MAP_SHARED, mfd2, 0);
+	assert(px2 != MAP_FAILED);
+	for (size_t i = 0; i < bsize / 4; i++)
+		px2[i] = 0x00123456u;
+	struct cl_commit cm2 = { .type = CL_COMMIT, .wid = 7,
+		.buffer = { .kind = CL_BUF_SHM, .width = BW, .height = BH,
+		            .stride = BSTRIDE, .format = CL_FORMAT_XRGB8888 } };
+	assert(cl_send(cli, &cm2, sizeof(cm2), &mfd2, 1) == 0);
+	close(mfd2);
+	drain(t);
+	win = window_by_id(&stack, server_id);
+	assert(win && win->buf && win->buf[0] == 0x00123456u);
+	printf("ok: reclaimed window accepts new commits\n");
+
+	munmap(px2, bsize);
 	munmap(px, bsize);
-	transport_destroy(t);
-	printf("PASS: transport self-test\n");
+	close(cli);
+	transport_destroy(t);   /* reaps the now-re-orphaned window cleanly */
+	printf("PASS: transport self-test (incl. crash reconnect)\n");
 	return 0;
 }

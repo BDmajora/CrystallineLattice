@@ -16,10 +16,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Run a command to completion (child context, before exec). Returns the exit
@@ -98,6 +100,74 @@ static void configure_registry(void)
 
 	/* Flush the registry to disk; explorer starts a fresh wineserver. */
 	run_wait((const char *[]){ "wineserver", "--kill", NULL });
+}
+
+/* Fork a fire-and-forget daemon (no wait; the server's SIG_IGN SIGCHLD reaps
+ * it), output to a log file. Returns the pid or -1. */
+static pid_t spawn_daemon(const char *bin, const char *logpath)
+{
+	pid_t pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		setsid();
+		int fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd >= 0) {
+			dup2(fd, 1);
+			dup2(fd, 2);
+			if (fd > 2)
+				close(fd);
+		}
+		execlp(bin, bin, (char *)NULL);
+		_exit(127);
+	}
+	return pid;
+}
+
+/* Bring up the PipeWire audio stack so Wine's winepipewire.drv finds a live
+ * daemon when mmdevapi probes (DESIGN.md keeps PipeWire as-is; this is just the
+ * session bring-up frostedglass's fg_audio.c used to do). Must run before the
+ * Wine shell, since the driver probes exactly once at explorer startup. */
+void shell_start_audio(void)
+{
+	const char *xdg = getenv("XDG_RUNTIME_DIR");
+	const char *home = getenv("HOME");
+	const char *base = (home && home[0]) ? home : "/tmp";
+	char sock[512], log[512];
+	bool ready = false;
+
+	snprintf(sock, sizeof(sock), "%s/pipewire-0", xdg ? xdg : "/tmp");
+	if (access(sock, F_OK) == 0) {
+		LOG_INFO("audio: PipeWire already running (%s)", sock);
+		return;
+	}
+
+	snprintf(log, sizeof(log), "%s/glacier-pipewire.log", base);
+	if (spawn_daemon("pipewire", log) <= 0) {
+		LOG_WARN("audio: could not spawn pipewire; Wine audio will be silent");
+		return;
+	}
+	LOG_INFO("audio: pipewire launched");
+
+	/* The session manager and Wine both need the client socket present. */
+	for (int i = 0; i < 60 && !ready; i++) {
+		if (access(sock, F_OK) == 0)
+			ready = true;
+		else {
+			struct timespec ts = { .tv_nsec = 50 * 1000 * 1000 };
+			nanosleep(&ts, NULL);
+		}
+	}
+	if (!ready) {
+		LOG_WARN("audio: pipewire socket %s never appeared (see %s)", sock, log);
+		return;
+	}
+
+	snprintf(log, sizeof(log), "%s/glacier-wireplumber.log", base);
+	spawn_daemon("wireplumber", log);     /* builds the session / device graph */
+	snprintf(log, sizeof(log), "%s/glacier-pipewire-pulse.log", base);
+	spawn_daemon("pipewire-pulse", log);  /* PulseAudio shim for pulse-API apps */
+	LOG_INFO("audio: wireplumber + pipewire-pulse launched");
 }
 
 void shell_launch(int width, int height, const char *cl_socket_path)

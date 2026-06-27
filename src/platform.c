@@ -320,6 +320,53 @@ int kms_setup(int fd, struct kms *k)
 	return 0;
 }
 
+int kms_set_mode_wh(struct kms *k, int w, int h, int refresh_mhz)
+{
+	drmModeConnector *conn = drmModeGetConnector(k->fd, k->connector_id);
+	drmModeModeInfo newmode;
+	uint32_t blob, best_diff = ~0u;
+	int best = -1;
+
+	if (!conn)
+		return -1;
+	for (int i = 0; i < conn->count_modes; i++) {
+		const drmModeModeInfo *m = &conn->modes[i];
+		uint32_t rm, diff;
+		if (m->flags & DRM_MODE_FLAG_INTERLACE)
+			continue;
+		if (m->hdisplay != w || m->vdisplay != h)
+			continue;
+		rm = (m->htotal && m->vtotal)
+		   ? (uint32_t)((uint64_t)m->clock * 1000000u /
+		                ((uint32_t)m->htotal * m->vtotal))
+		   : m->vrefresh * 1000u;
+		diff = refresh_mhz ? (rm > (uint32_t)refresh_mhz ? rm - refresh_mhz
+		                                                 : refresh_mhz - rm) : 0;
+		if (best < 0 || diff < best_diff) {
+			best = i;
+			best_diff = diff;
+			newmode = *m;
+		}
+	}
+	drmModeFreeConnector(conn);
+	if (best < 0) {
+		LOG_WARN("kms: no %dx%d mode on connector %u", w, h, k->connector_id);
+		return -1;
+	}
+
+	if (drmModeCreatePropertyBlob(k->fd, &newmode, sizeof(newmode), &blob) != 0) {
+		LOG_ERR("kms: create mode blob: %s", strerror(errno));
+		return -1;
+	}
+	if (k->mode_blob)
+		drmModeDestroyPropertyBlob(k->fd, k->mode_blob);
+	k->mode = newmode;
+	k->mode_blob = blob;
+	LOG_INFO("kms: switched to %s %dx%d@%d", k->mode.name,
+	         k->mode.hdisplay, k->mode.vdisplay, k->mode.vrefresh);
+	return 0;
+}
+
 void kms_finish(struct kms *k)
 {
 	if (k->mode_blob)

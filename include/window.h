@@ -38,7 +38,24 @@ struct window {
 	const uint32_t *buf;    /* mmap'd XRGB8888 pixels, or NULL */
 	int buf_w, buf_h;       /* buffer dimensions in pixels */
 	int buf_stride;         /* row stride in bytes */
+
+	/* Aero Snap (Phase 5): when snapped, the pre-snap rect is stashed here so
+	 * dragging the window off the edge restores its floating size. */
+	bool snapped;
+	int saved_x, saved_y, saved_w, saved_h;
+
+	/* The window draws its own Win32 chrome (Wine windows), so glacier draws no
+	 * server title bar over it. Native Wayland apps leave this false and get the
+	 * server-drawn title bar instead — so every window still has one. */
+	bool app_decorated;
 };
+
+/* Does glacier draw a server-side title bar for this window? Only NORMAL
+ * windows that don't decorate themselves (i.e. native Wayland apps). */
+static inline bool window_has_ssd(const struct window *w)
+{
+	return w->role == WIN_NORMAL && !w->app_decorated;
+}
 
 #define WIN_MAX 64
 
@@ -72,6 +89,11 @@ struct window *window_at(struct window_stack *s, int gx, int gy);
 void window_raise(struct window_stack *s, uint32_t id);  /* to top    */
 void window_lower(struct window_stack *s, uint32_t id);  /* to bottom */
 void window_move(struct window_stack *s, uint32_t id, int x, int y);
+
+/* Move *and* resize in one go (server-authoritative geometry — Aero Snap,
+ * future control-panel resize). The owning transport is told via a CONFIGURE. */
+void window_set_geometry(struct window_stack *s, uint32_t id,
+                         int x, int y, int w, int h);
 
 /* Focus a window and raise it (server policy: focus implies raise). */
 void           window_focus(struct window_stack *s, uint32_t id);

@@ -108,6 +108,20 @@ void window_move(struct window_stack *s, uint32_t id, int x, int y)
 	}
 }
 
+void window_set_geometry(struct window_stack *s, uint32_t id,
+                         int x, int y, int w, int h)
+{
+	struct window *win = window_by_id(s, id);
+	if (!win)
+		return;
+	win->x = x;
+	win->y = y;
+	if (w > 0)
+		win->w = w;
+	if (h > 0)
+		win->h = h;
+}
+
 void window_focus(struct window_stack *s, uint32_t id)
 {
 	struct window *w = window_by_id(s, id);

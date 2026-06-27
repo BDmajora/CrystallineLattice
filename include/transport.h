@@ -17,6 +17,18 @@
 struct window_stack;
 struct transport;
 
+/* The cursor shape the focused client wants (CL_SET_CURSOR). The server owns
+ * the cursor position and draws this shape, falling back to its built-in arrow
+ * when `custom` is false. ARGB8888, straight alpha, capped to 64x64. */
+#define CL_CURSOR_MAX 64
+struct cl_cursor {
+	bool     custom;        /* false ⇒ draw the built-in arrow */
+	bool     hidden;        /* true  ⇒ draw nothing */
+	int      w, h;
+	int      hotspot_x, hotspot_y;
+	uint32_t argb[CL_CURSOR_MAX * CL_CURSOR_MAX];
+};
+
 /* Create the transport over `stack` (which it mutates) for a virtual screen of
  * sw×sh. No socket is bound yet — call transport_listen(). NULL on failure. */
 struct transport *transport_create(struct window_stack *stack, int sw, int sh);
@@ -31,6 +43,13 @@ int transport_fd(struct transport *t);
 /* The bound rendezvous socket path (valid after transport_listen), so the
  * server can hand it to a spawned client as $GLACIER_SOCKET. */
 const char *transport_socket_path(struct transport *t);
+
+/* Update the virtual-screen size advertised to new clients (after a resolution
+ * change). Existing clients keep their windows; new connections see the size. */
+void transport_set_screen(struct transport *t, int w, int h);
+
+/* The cursor shape last set by a client; the compositor draws it. */
+const struct cl_cursor *transport_cursor(struct transport *t);
 
 /* Service all ready events (new connections, client messages, disconnects).
  * Returns true if the scene changed and the server should recomposite. */
@@ -60,6 +79,11 @@ void transport_keyboard_key(struct transport *t, uint32_t focus_id,
 /* Emit CL_FOCUS transitions when the server's focused window changes; call once
  * per loop with the current stack focus id. */
 void transport_update_focus(struct transport *t, uint32_t focus_id);
+
+/* Re-send a window's server-decided geometry to its owning client (CL_CONFIGURE)
+ * after the WM changed it server-side (Aero Snap, control-panel resize). No-op
+ * if the id isn't a CrystallineLattice client window. */
+void transport_notify_geometry(struct transport *t, uint32_t server_id);
 
 void transport_destroy(struct transport *t);
 

@@ -15,4 +15,9 @@
  * decision of whether to launch (e.g. honour $GLACIER_NO_SHELL). */
 void shell_launch(int width, int height, const char *cl_socket_path);
 
+/* Start the PipeWire audio stack (pipewire + wireplumber + pipewire-pulse) so
+ * Wine's audio driver finds a live daemon. Call before shell_launch. No-op if
+ * a PipeWire socket already exists. */
+void shell_start_audio(void);
+
 #endif /* GLACIER_SHELL_H */

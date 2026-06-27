@@ -70,6 +70,54 @@ int main(void)
 	window_destroy(&s, desk);
 	assert(s.count == 2 && window_by_id(&s, desk) == NULL);
 
-	printf("wm selftest: OK\n");
+	/* ---- Aero Snap (Phase 5) ----------------------------------------- */
+	{
+		struct window_stack ss;
+		struct wm w2;
+		struct window *aw;
+		window_stack_init(&ss);
+		/* A bottom-docked taskbar (full width, 40px) → work area is screen
+		 * minus those 40px. */
+		window_create(&ss, WIN_TASKBAR, 0, 1040, 1920, 40, 0, "taskbar");
+		uint32_t app = window_create(&ss, WIN_NORMAL, 500, 400, 300, 200, 0, "app");
+		wm_init(&w2, &ss, 1920, 1080);
+
+		/* Drag the title bar and release at the LEFT edge → snap to the left
+		 * half of the work area; the floating rect is remembered and the
+		 * owning client is flagged for a CONFIGURE. */
+		w2.cursor_x = 550; w2.cursor_y = 405;        /* over app's title bar */
+		wm_pointer_button(&w2, WM_BTN_LEFT, true);
+		assert(w2.moving);
+		w2.cursor_x = 2; w2.cursor_y = 540;          /* release at left edge */
+		wm_pointer_button(&w2, WM_BTN_LEFT, false);
+		aw = window_by_id(&ss, app);
+		assert(aw->snapped);
+		assert(aw->x == 0 && aw->y == 0 && aw->w == 960 && aw->h == 1040);
+		assert(aw->saved_w == 300 && aw->saved_h == 200);
+		assert(w2.reconfigured_id == app);
+
+		/* Dragging the snapped window's title bar restores the floating size. */
+		w2.reconfigured_id = 0;
+		w2.cursor_x = 400; w2.cursor_y = 5;
+		wm_pointer_button(&w2, WM_BTN_LEFT, true);
+		aw = window_by_id(&ss, app);
+		assert(!aw->snapped && aw->w == 300 && aw->h == 200);
+		assert(w2.reconfigured_id == app);
+		w2.cursor_x = 600; w2.cursor_y = 540;        /* release mid-screen → no snap */
+		wm_pointer_button(&w2, WM_BTN_LEFT, false);
+		aw = window_by_id(&ss, app);
+		assert(!aw->snapped && aw->w == 300);
+
+		/* Drag to the TOP edge → maximize to the work area (not over taskbar). */
+		w2.cursor_x = aw->x + 20; w2.cursor_y = aw->y + 5;
+		wm_pointer_button(&w2, WM_BTN_LEFT, true);
+		w2.cursor_x = 960; w2.cursor_y = 2;          /* release at top edge */
+		wm_pointer_button(&w2, WM_BTN_LEFT, false);
+		aw = window_by_id(&ss, app);
+		assert(aw->snapped && aw->x == 0 && aw->y == 0);
+		assert(aw->w == 1920 && aw->h == 1040);      /* full screen minus taskbar */
+	}
+
+	printf("wm selftest: OK (incl. Aero Snap)\n");
 	return 0;
 }

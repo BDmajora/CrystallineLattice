@@ -22,6 +22,12 @@ struct wm {
 	bool moving;              /* interactive move-drag in progress */
 	uint32_t move_id;        /* window being dragged */
 	int grab_dx, grab_dy;    /* cursor offset within the grabbed window */
+
+	/* Aero Snap: when the WM changes a window's *size* (snap/unsnap), it sets
+	 * this to that window's id so the server re-sends the new geometry to the
+	 * owning client (CONFIGURE). The server clears it after notifying. 0 = none.
+	 * (Pure moves don't set it: the compositor already follows the new x,y.) */
+	uint32_t reconfigured_id;
 };
 
 void wm_init(struct wm *wm, struct window_stack *stack, int screen_w, int screen_h);

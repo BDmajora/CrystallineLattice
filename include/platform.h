@@ -54,6 +54,11 @@ struct kms {
  * property maps, and creates the mode blob. Returns 0 on success. */
 int  kms_setup(int fd, struct kms *k);
 void kms_finish(struct kms *k);
+/* Switch the target mode at runtime: find the connector mode matching w×h
+ * (closest refresh, 0 = any), update k->mode and rebuild the mode blob. The
+ * caller must reallocate framebuffers to the new size and re-modeset. 0 on
+ * success, -1 if no such mode. (Phase 5 resolution change.) */
+int  kms_set_mode_wh(struct kms *k, int w, int h, int refresh_mhz);
 /* Add connector/CRTC modeset state to an atomic request. */
 int  kms_atomic_modeset(drmModeAtomicReq *req, struct kms *k);
 /* Add full primary-plane state (FB_ID + SRC/CRTC rects) to a request. */

@@ -34,7 +34,7 @@
 #include <sys/types.h>
 
 #define CL_MAGIC        0x4C435243u  /* 'CRCL' */
-#define CL_VERSION      1u           /* this build speaks */
+#define CL_VERSION      2u           /* this build speaks (v2: reconnect token) */
 #define CL_MIN_VERSION  1u           /* …and accepts down to here */
 
 /* Default rendezvous: $XDG_RUNTIME_DIR/glacier-0, overridable by $GLACIER_SOCKET
@@ -53,6 +53,8 @@ enum cl_msg_type {
 	CL_SET_TITLE,
 	CL_COMMIT,           /* submit a content buffer (fd via SCM_RIGHTS) */
 	CL_DESTROY_WINDOW,
+	CL_SET_GEOMETRY,     /* client requests a new geometry (Wine moved/resized it) */
+	CL_SET_CURSOR,       /* focused client's cursor shape (ARGB via SCM_RIGHTS) */
 	/* server → client */
 	CL_WELCOME = 128,    /* negotiated version + virtual-screen size */
 	CL_CONFIGURE,        /* server-decided geometry for a window */
@@ -96,6 +98,10 @@ struct cl_hello {
 	uint32_t magic;      /* CL_MAGIC */
 	uint32_t version;    /* client's CL_VERSION */
 	uint32_t min_version;/* lowest the client accepts */
+	/* v2+: a token from a previous CL_WELCOME to reclaim that session's windows
+	 * after a crash/restart; 0 for a fresh connection. Older (v1) clients send a
+	 * shorter datagram with no token — the server reads it only when present. */
+	uint32_t reconnect_token;
 };
 
 struct cl_welcome {
@@ -103,6 +109,9 @@ struct cl_welcome {
 	uint32_t magic;      /* CL_MAGIC */
 	uint32_t version;    /* negotiated version */
 	uint32_t screen_w, screen_h;
+	/* v2+: the token this client should present in a later CL_HELLO to reclaim
+	 * its windows if it reconnects within the grace period. */
+	uint32_t reconnect_token;
 };
 
 struct cl_create_window {
@@ -128,6 +137,28 @@ struct cl_commit {
 struct cl_destroy_window {
 	uint32_t type;       /* CL_DESTROY_WINDOW */
 	uint32_t wid;
+};
+
+/* Client-requested geometry (Wine moved/resized its own window, e.g. a
+ * title-bar drag or a dialog centring itself). The shell is still authoritative
+ * — it may honour, clamp or place — but for a NORMAL window it normally honours
+ * the request so app-driven moves track on screen. */
+struct cl_set_geometry {
+	uint32_t type;       /* CL_SET_GEOMETRY */
+	uint32_t wid;
+	int32_t  x, y;
+	uint32_t w, h;
+};
+
+/* The cursor shape the focused app wants (Win32 SetCursor). glacier owns the
+ * cursor plane/position but follows this shape, so an app's I-beam / resize
+ * arrows show like on Windows. ARGB8888 pixels (straight alpha, top-down) ride
+ * as an SCM_RIGHTS fd; hide=1 means no buffer (hidden cursor). */
+struct cl_set_cursor {
+	uint32_t type;       /* CL_SET_CURSOR */
+	uint32_t width, height;
+	int32_t  hotspot_x, hotspot_y;
+	uint32_t hide;       /* 1 ⇒ hidden, no fd */
 };
 
 struct cl_configure {

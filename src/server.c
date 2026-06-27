@@ -9,14 +9,17 @@
 #include "transport.h"
 #include "wayland.h"
 #include "shell.h"
+#include "control.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <libudev.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define TITLEBAR_H DECOR_TITLEBAR_H   /* shared with the WM (window.h) */
@@ -26,6 +29,13 @@
 
 static volatile sig_atomic_t running = 1;
 static void on_sigint(int s) { (void)s; running = 0; }
+
+static int64_t now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 /* 11x16 arrow: 'X' outline, '.' fill, ' ' transparent. The real cursor is a
  * KMS hardware-cursor plane (next step); this is the CPU-fallback software
@@ -77,14 +87,55 @@ static void blit_buffer(struct dumb_fb *fb, const struct window *w, int cy0)
 	}
 }
 
-static void draw_cursor(struct dumb_fb *fb, int cx, int cy)
+static void draw_cursor(struct dumb_fb *fb, int cx, int cy,
+                        const struct cl_cursor *cur)
 {
+	if (cur && cur->hidden)
+		return;
+
+	/* A focused app's cursor shape (I-beam, resize arrows, …): ARGB blended
+	 * over the desktop at the hotspot. We still own the position. */
+	if (cur && cur->custom) {
+		int ox = cx - cur->hotspot_x, oy = cy - cur->hotspot_y;
+		for (int r = 0; r < cur->h; r++) {
+			int y = oy + r;
+			const uint32_t *src;
+			uint32_t *row;
+			if (y < 0 || y >= fb->h)
+				continue;
+			src = &cur->argb[r * cur->w];
+			row = (uint32_t *)(fb->map + (size_t)y * fb->stride);
+			for (int c = 0; c < cur->w; c++) {
+				int x = ox + c;
+				uint32_t px, d, r2, g2, b2;
+				uint8_t a;
+				if (x < 0 || x >= fb->w)
+					continue;
+				px = src[c];
+				a = px >> 24;
+				if (a == 0)
+					continue;
+				if (a == 0xff) {
+					row[x] = px & 0x00ffffffu;
+					continue;
+				}
+				d = row[x];
+				r2 = (((px >> 16) & 0xff) * a + ((d >> 16) & 0xff) * (255 - a)) / 255;
+				g2 = (((px >> 8) & 0xff) * a + ((d >> 8) & 0xff) * (255 - a)) / 255;
+				b2 = ((px & 0xff) * a + (d & 0xff) * (255 - a)) / 255;
+				row[x] = (r2 << 16) | (g2 << 8) | b2;
+			}
+		}
+		return;
+	}
+
+	/* Built-in arrow, used until a client sets its own cursor. */
 	for (int r = 0; r < 16; r++) {
 		for (int c = 0; CURSOR[r][c]; c++) {
 			char p = CURSOR[r][c];
+			int x = cx + c, y = cy + r;
 			if (p == ' ')
 				continue;
-			int x = cx + c, y = cy + r;
 			if (x < 0 || x >= fb->w || y < 0 || y >= fb->h)
 				continue;
 			uint32_t *row = (uint32_t *)(fb->map + (size_t)y * fb->stride);
@@ -93,7 +144,8 @@ static void draw_cursor(struct dumb_fb *fb, int cx, int cy)
 	}
 }
 
-static void composite(struct dumb_fb *fb, struct wm *wm)
+static void composite(struct dumb_fb *fb, struct wm *wm,
+                      const struct cl_cursor *cur)
 {
 	struct window_stack *s = wm->stack;
 	fill_rect(fb, 0, 0, fb->w, fb->h, COLOR_DESKTOP);
@@ -103,12 +155,11 @@ static void composite(struct dumb_fb *fb, struct wm *wm)
 		struct window *w = &s->windows[i];
 		if (!w->mapped)
 			continue;
-		/* Only NORMAL windows wear a server-drawn title bar. The shell
-		 * surfaces — desktop (wallpaper), taskbar, tray, menus, tooltips —
-		 * are chromeless and own their whole rect, so they read as real
-		 * Windows shell parts rather than decorated app windows. The role
-		 * comes from the client's explicit registration, not a heuristic. */
-		bool chrome = (w->role == WIN_NORMAL);
+		/* Glacier draws a title bar only for windows that don't decorate
+		 * themselves — i.e. native Wayland apps. Wine paints its own Win32
+		 * chrome, and the shell surfaces (desktop/taskbar/tray/menus/tooltips)
+		 * are chromeless, so neither gets an SSD. */
+		bool chrome = window_has_ssd(w);
 		int cy0 = chrome ? TITLEBAR_H : 0;
 		if (chrome) {
 			bool focused = (w->id == s->focus_id);
@@ -121,7 +172,7 @@ static void composite(struct dumb_fb *fb, struct wm *wm)
 		if (w->buf)
 			blit_buffer(fb, w, cy0);
 	}
-	draw_cursor(fb, wm->cursor_x, wm->cursor_y);
+	draw_cursor(fb, wm->cursor_x, wm->cursor_y, cur);
 }
 
 /* ---- input routing --------------------------------------------------- */
@@ -131,6 +182,7 @@ struct loop_ctx {
 	struct wl_frontend *wl;
 	struct transport *xport;   /* CrystallineLattice clients (Transport A) */
 	bool dirty;
+	bool activity;             /* any input this iteration → reset the idle timer */
 };
 
 /* Ctrl+Alt+T → a terminal. The terminal is a native Wayland client, so it
@@ -184,6 +236,7 @@ static void spawn_terminal(struct wl_frontend *wl)
 static void on_input(const struct input_event *ev, void *user)
 {
 	struct loop_ctx *c = user;
+	c->activity = true;   /* any input wakes the display / resets idle blanking */
 	switch (ev->kind) {
 	case INPUT_MOTION:
 		wm_pointer_motion(c->wm, ev->dx, ev->dy);
@@ -260,6 +313,52 @@ static void seed_windows(struct window_stack *s, int sw, int sh)
 }
 
 /* ---- main loop ------------------------------------------------------- */
+
+/* Context for the control socket's resolution-change callback: pointers into
+ * server_run's live state so a SET_MODE can re-modeset and resize everything. */
+struct mode_apply_ctx {
+	int drm_fd;
+	struct kms *k;
+	struct dumb_fb *fb;        /* the two framebuffers */
+	struct wm *wm;
+	struct transport *xport;
+	bool *need_modeset;
+	bool *dirty;
+};
+
+/* Apply a resolution change requested over the control socket: switch the KMS
+ * mode, reallocate both framebuffers, resize the virtual screen, and force a
+ * modeset on the next frame. */
+static bool apply_mode_cb(void *user, int w, int h, int refresh_mhz)
+{
+	struct mode_apply_ctx *m = user;
+	int nw, nh;
+
+	if (kms_set_mode_wh(m->k, w, h, refresh_mhz) != 0)
+		return false;
+	nw = m->k->mode.hdisplay;
+	nh = m->k->mode.vdisplay;
+
+	for (int i = 0; i < 2; i++) {
+		dumb_fb_destroy(m->drm_fd, &m->fb[i]);
+		if (dumb_fb_create(m->drm_fd, nw, nh, &m->fb[i]) != 0) {
+			LOG_ERR("control: framebuffer realloc failed at %dx%d", nw, nh);
+			return false;
+		}
+	}
+
+	m->wm->screen_w = nw;
+	m->wm->screen_h = nh;
+	if (m->wm->cursor_x >= nw) m->wm->cursor_x = nw - 1;
+	if (m->wm->cursor_y >= nh) m->wm->cursor_y = nh - 1;
+	if (m->xport)
+		transport_set_screen(m->xport, nw, nh);
+
+	*m->need_modeset = true;
+	*m->dirty = true;
+	LOG_INFO("control: resolution changed to %dx%d", nw, nh);
+	return true;
+}
 
 int server_run(int argc, char **argv)
 {
@@ -393,6 +492,7 @@ int server_run(int argc, char **argv)
 	 * Best-effort, and only once the transport is listening (the shell connects
 	 * back to it via $GLACIER_SOCKET). */
 	if (want_shell) {
+		shell_start_audio();   /* PipeWire up before Wine probes mmdevapi */
 		if (xport)
 			shell_launch(k.mode.hdisplay, k.mode.vdisplay,
 			             transport_socket_path(xport));
@@ -413,6 +513,41 @@ int server_run(int argc, char **argv)
 	bool master = false, need_modeset = false;
 	int front = 0;
 
+	/* Phase 5: the control socket. Control-panel applets (desk.cpl) ask the
+	 * server for outputs/modes and request resolution changes over it, instead
+	 * of shelling out to wlr-randr — the server is the modesetting authority. */
+	struct control *ctl = control_create(&k);
+	if (ctl && control_listen(ctl, NULL) != 0) {
+		control_destroy(ctl);
+		ctl = NULL;
+	}
+	if (!ctl)
+		LOG_WARN("control socket unavailable; resolution change from the panel won't work");
+	struct mode_apply_ctx mode_ctx = {
+		.drm_fd = drm_fd, .k = &k, .fb = fb, .wm = &wm, .xport = xport,
+		.need_modeset = &need_modeset, .dirty = &ctx.dirty,
+	};
+
+	/* Phase 6 hotplug: watch udev for DRM connector add/remove and re-modeset. */
+	struct udev *udev = udev_new();
+	struct udev_monitor *umon = udev ? udev_monitor_new_from_netlink(udev, "udev")
+	                                 : NULL;
+	int udev_fd = -1;
+	if (umon) {
+		udev_monitor_filter_add_match_subsystem_devtype(umon, "drm", NULL);
+		udev_monitor_enable_receiving(umon);
+		udev_fd = udev_monitor_get_fd(umon);
+	} else {
+		LOG_WARN("hotplug: udev monitor unavailable; connector changes won't be noticed");
+	}
+
+	/* Phase 6 idle blanking (DPMS): blank the panel after no input for a while;
+	 * any input wakes it. $GLACIER_IDLE_MS overrides (0 disables). */
+	const char *idle_env = getenv("GLACIER_IDLE_MS");
+	int64_t idle_ms = idle_env ? atoll(idle_env) : 300000;   /* 5 min default */
+	int64_t last_activity = now_ms();
+	bool blanked = false;
+
 	LOG_INFO("glacier wm: %dx%d — Alt-Tab to switch, drag to move, Esc to quit",
 	         k.mode.hdisplay, k.mode.vdisplay);
 
@@ -429,9 +564,33 @@ int server_run(int argc, char **argv)
 			master = false;
 		}
 
-		if (master && ctx.dirty) {
+		/* Idle blanking (DPMS): input resets the timer and wakes a blanked
+		 * panel; sustained idle blanks it via an ACTIVE=0 atomic commit. */
+		int64_t now = now_ms();
+		if (ctx.activity) {
+			ctx.activity = false;
+			last_activity = now;
+			if (blanked) {
+				blanked = false;
+				need_modeset = true;   /* full modeset re-enables the CRTC */
+				ctx.dirty = true;
+				LOG_INFO("idle: input — waking display");
+			}
+		}
+		if (master && !blanked && idle_ms > 0 && now - last_activity > idle_ms) {
+			drmModeAtomicReq *req = drmModeAtomicAlloc();
+			atomic_add(req, k.crtc_id, &k.crtc_props, "ACTIVE", 0);
+			if (drmModeAtomicCommit(drm_fd, req,
+			                        DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0) {
+				blanked = true;
+				LOG_INFO("idle: blanking display (DPMS off)");
+			}
+			drmModeAtomicFree(req);
+		}
+
+		if (master && ctx.dirty && !blanked) {
 			int back = front ^ 1;
-			composite(&fb[back], &wm);
+			composite(&fb[back], &wm, xport ? transport_cursor(xport) : NULL);
 
 			drmModeAtomicReq *req = drmModeAtomicAlloc();
 			uint32_t flags = 0;
@@ -455,13 +614,15 @@ int server_run(int argc, char **argv)
 			ctx.dirty = false;
 		}
 
-		struct pollfd pfd[4] = {
+		struct pollfd pfd[6] = {
 			{ .fd = seat_fd(&seat), .events = POLLIN },
 			{ .fd = input ? input_fd(input) : -1, .events = POLLIN },
 			{ .fd = xport ? transport_fd(xport) : -1, .events = POLLIN },
 			{ .fd = wl ? wl_frontend_fd(wl) : -1, .events = POLLIN },
+			{ .fd = ctl ? control_fd(ctl) : -1, .events = POLLIN },
+			{ .fd = udev_fd, .events = POLLIN },
 		};
-		if (poll(pfd, 4, 1000) < 0 && errno != EINTR)
+		if (poll(pfd, 6, 1000) < 0 && errno != EINTR)
 			break;
 		if (pfd[0].revents & POLLIN)
 			seat_dispatch(&seat, 0);
@@ -473,6 +634,20 @@ int server_run(int argc, char **argv)
 		if (wl && (pfd[3].revents & POLLIN))
 			if (wl_frontend_dispatch(wl))
 				ctx.dirty = true;
+		if (ctl && (pfd[4].revents & POLLIN))
+			control_process(ctl, apply_mode_cb, &mode_ctx);
+		if (umon && (pfd[5].revents & POLLIN)) {
+			struct udev_device *dev = udev_monitor_receive_device(umon);
+			if (dev) {
+				const char *hp = udev_device_get_property_value(dev, "HOTPLUG");
+				if (hp && !strcmp(hp, "1")) {
+					LOG_INFO("hotplug: DRM connector change — re-syncing");
+					need_modeset = true;
+					ctx.dirty = true;
+				}
+				udev_device_unref(dev);
+			}
+		}
 		/* Keep Wayland keyboard focus in step with the WM's focused window,
 		 * then push any queued pointer/keyboard events out to clients. */
 		if (wl) {
@@ -482,10 +657,24 @@ int server_run(int argc, char **argv)
 		/* Mirror focus transitions to CrystallineLattice clients (CL_FOCUS). */
 		if (xport)
 			transport_update_focus(xport, stack.focus_id);
+
+		/* Aero Snap (and future server-side resizes) changed a window's
+		 * geometry: tell the owning client so it re-renders at the new size. */
+		if (wm.reconfigured_id) {
+			if (xport)
+				transport_notify_geometry(xport, wm.reconfigured_id);
+			wm.reconfigured_id = 0;
+			ctx.dirty = true;
+		}
 	}
 
 	if (master)
 		drmDropMaster(drm_fd);
+	if (umon)
+		udev_monitor_unref(umon);
+	if (udev)
+		udev_unref(udev);
+	control_destroy(ctl);
 	wl_frontend_destroy(wl);
 	transport_destroy(xport);
 	input_destroy(input);
