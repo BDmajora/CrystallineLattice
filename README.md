@@ -104,4 +104,4 @@ startup) and appear as peers wearing the server's title bar.
 
 ## License
 
-Built for the YetiOS project.
+MIT License - YetiOS Project.
